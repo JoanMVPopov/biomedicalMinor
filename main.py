@@ -442,15 +442,19 @@ def main():
 
     #########################################
     # Uncomment this if you want all the runs
-    # amount_of_runs = len([name for name in os.listdir(directory_files_path)]) + 1  # add gitkeep file empty run
-    amount_of_runs = 10 + 1  # add gitkeep file empty run
+    amount_of_runs = len([name for name in os.listdir(directory_files_path)])
+    # amount_of_runs = 10
+
+    runs = range(0, 10)
     ##########################################
 
     folder_names = sorted(
         [name for name in os.listdir(os.path.join(current_file_directory, "all_data_first")) if ".gitkeep" not in name],
         key=lambda x: int(os.path.basename(x).split("_")[0]))
 
-    for run in range(0, amount_of_runs):
+    gitkeep_index = -1
+
+    for run in runs:
         run_file_names = []
         for folder_name in folder_names:
             current_folder_run_file = os.path.join(
@@ -467,6 +471,7 @@ def main():
 
         # if run only traversed .gitkeep from each folder, len will be 0
         if len(run_file_names) == 0:
+            gitkeep_index = run
             continue
 
         current_run_volume_numpy, current_run_volume_mesh = analyze_run(run_file_names)
@@ -475,10 +480,14 @@ def main():
         volume_estimates_numpy.append(current_run_volume_numpy)
         volume_estimates_pyvista_mesh.append(current_run_volume_mesh)
 
+    runs_list = list(runs)
+    if gitkeep_index != -1:
+        runs_list.pop(gitkeep_index)
+
     # Create the plot
     plt.figure(figsize=(10, 6))  # Set the figure size
-    plt.plot(range(0, amount_of_runs - 1), volume_estimates_numpy, label="NUMPY Volume progression")  # Plot the line
-    plt.plot(range(0, amount_of_runs - 1), volume_estimates_pyvista_mesh, label="PYVISTA MESH Volume progression")  # Plot the line
+    plt.plot(runs_list, volume_estimates_numpy, label="NUMPY Volume progression")  # Plot the line
+    plt.plot(runs_list, volume_estimates_pyvista_mesh, label="PYVISTA MESH Volume progression")  # Plot the line
 
     # Add labels and title
     plt.xlabel("Runs")  # Label for X-axis
