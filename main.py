@@ -5,6 +5,7 @@ import SimpleITK as sitk
 import cv2
 
 import matplotlib.pyplot as plt
+import vtk
 from scipy import ndimage
 
 from skimage import measure
@@ -12,6 +13,7 @@ from skimage._shared.filters import gaussian
 from skimage.filters import threshold_otsu
 
 import pyvista as pv  # pip install pyvista
+from skimage.morphology import binary_closing, ball
 
 
 def load_images_from_directory(jpg_filenames):
@@ -19,98 +21,44 @@ def load_images_from_directory(jpg_filenames):
     Load JPG images from a 'files' subdirectory, convert each to grayscale,
     and stack them into a 3D numpy volume (shape: [Z, Y, X]).
     """
-    # current_file_directory = os.path.dirname(os.path.abspath(__file__))
-    # directory_files_path = os.path.join(current_file_directory, "files")
-    #
-    # # Gather JPG filenames
-    # # Sort by filenames (modify key as needed)
-    # jpg_filenames = sorted([
-    #     os.path.join(directory_files_path, f)
-    #     for f in os.listdir(directory_files_path)
-    #     if f.lower().endswith('.jpg')
-    # ], key=lambda x: int(os.path.basename(x).split("_")[0]))
-
-    # for j in jpg_filenames:
-    #     print(j)
-
     # List to hold each processed 2D slice
     slices_3d = []
 
-    for i, j in enumerate(jpg_filenames[4:len(jpg_filenames)]):
-        # Load and process an image
-        #sharp_mask, visualization = detect_sharp_regions(j)
+    # first few images usually don't have cytoplasm in focus
+    # maybe we can skip them??
+    #for i, j in enumerate(jpg_filenames[4:len(jpg_filenames)]):
 
-        # Display or save the results
-        #cv2.imwrite(f"{i}.jpg", visualization)
+    for i, j in enumerate(jpg_filenames):
 
-        # 1. Read and convert to grayscale
         image = cv2.imread(j)
         # gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-        # 1) Determine the center and radius
-        h, w = image.shape[:2]
-        center_x, center_y = w // 2, h // 2
-        radius = max(center_x, center_y)  # for safety margin
-
-        # 2) Create a blurred version
-        #    - The kernel size and sigma (20) can be tuned
-        blurred = cv2.GaussianBlur(image, (7, 7), 50)
-
-        # 3) Build a distance map from the center (Euclidean distance)
-        #    dist_map[y, x] = distance of pixel (x, y) from center
-        y_indices, x_indices = np.indices((h, w))
-        dist_map = np.sqrt((x_indices - center_x) ** 2 + (y_indices - center_y) ** 2)
-
-        # 4) Normalize the distance to [0, 1] where
-        #    dist = 0 => center => alpha=0 => 0% blurred, 100% original
-        #    dist >= radius => edges => alpha=1 => 100% blurred
-        alpha = dist_map / radius
-        alpha = np.clip(alpha, 0, 1)  # Ensure we don't exceed [0,1]
-
-        # If the image is color, we need 3 channels of alpha.
-        # If the image is grayscale, you can skip this expansion.
-        if len(image.shape) == 3 and image.shape[2] == 3:
-            alpha_3d = cv2.merge([alpha, alpha, alpha])
-            # Blend: final = alpha * blurred + (1 - alpha)* original
-            # Make sure everything is float to avoid clip/round errors
-            blurred_float = blurred.astype(np.float32)
-            image_float = image.astype(np.float32)
-            final_float = alpha_3d * blurred_float + (1 - alpha_3d) * image_float
-
-            # Convert back to uint8
-            final = final_float.astype(np.uint8)
-
-        else:
-            # For grayscale images
-            blurred_float = blurred.astype(np.float32)
-            image_float = image.astype(np.float32)
-            final_float = alpha * blurred_float + (1 - alpha) * image_float
-            final = final_float.astype(np.uint8)
+        # final = blur_region_outside_of_radius(image)
+        # final = color_region_outside_of_radius(image)
+        final = gradual_color_region_outside_radius(image)
 
         gray = cv2.cvtColor(final, cv2.COLOR_BGR2GRAY)
 
-        # 2. Compute Laplacian
-        #    - ksize=3 (or 5) is the kernel size, can be tuned
+        # Otsu's threshold
+        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+        # compute Laplacian
         laplacian = cv2.Laplacian(gray, cv2.CV_64F, ksize=5)
         # Take absolute value to get magnitude
         laplacian_abs = np.absolute(laplacian)
 
-        # 3. Normalize the result (0 to 255 range) for easier thresholding
         laplacian_norm = cv2.normalize(laplacian_abs, None, 0, 255, cv2.NORM_MINMAX)
         laplacian_norm = np.uint8(laplacian_norm)
 
         # 4. Threshold to create a binary mask
-        #    - The threshold value (here 30) is empirical; adjust to your image
         _, focus_mask = cv2.threshold(laplacian_norm, 30, 255, cv2.THRESH_BINARY)
 
-        # 5. (Optional) Morphological operations to clean up noise
-        #    - You can open/close the mask to remove small bright/dark spots
+        # morphological operations to clean up noise
         kernel = np.ones((2, 2), np.uint8)
         focus_mask_clean = cv2.morphologyEx(focus_mask, cv2.MORPH_OPEN, kernel, iterations=1)
         focus_mask_clean = cv2.morphologyEx(focus_mask_clean, cv2.MORPH_CLOSE, kernel, iterations=5)
 
         # 6. Create output (isolate in-focus regions)
-        #    - We'll create a 3-channel mask so we can multiply it with the color image
         focus_mask_3d = cv2.merge([focus_mask_clean, focus_mask_clean, focus_mask_clean])
         in_focus_only = cv2.bitwise_and(final, focus_mask_3d)
 
@@ -119,9 +67,16 @@ def load_images_from_directory(jpg_filenames):
 
         # Append to list (as a 2D array)
         slices_3d.append(focus_mask_clean)
-        #slices_3d.append(in_focus_only)
+
+        ###############################
+        # VISUALIZATION
+        # purely experimental,
+        # only run this with A SMALL SUBSET
+        # of runs
+        ##############################
 
         # #Show results
+        # cv2.imshow("Thresh", thresh)
         # cv2.imshow("Original Image", image)
         # cv2.imshow("Focus Mask", focus_mask_clean)
         # cv2.imshow("In-Focus Regions", in_focus_only)
@@ -136,6 +91,137 @@ def load_images_from_directory(jpg_filenames):
     return volume
 
 
+def gradual_color_region_outside_radius(image):
+    # 1) Determine the center and radius
+    h, w = image.shape[:2]
+    center_x, center_y = w // 2, h // 2
+    radius = max(center_x, center_y)  # for safety margin
+
+    # 2) Calculate the average color
+    if len(image.shape) == 3 and image.shape[2] == 3:
+        avg_color = np.mean(image, axis=(0, 1))
+    else:
+        avg_color = np.mean(image)
+
+    # 3) Build a distance map from the center
+    y_indices, x_indices = np.indices((h, w))
+    dist_map = np.sqrt((x_indices - center_x) ** 2 + (y_indices - center_y) ** 2)
+
+    # 4) Create alpha channel for gradual transition
+    alpha = dist_map / radius
+    alpha = np.clip(alpha, 0, 1)
+
+    # 5) Apply gradual transition to average color
+    if len(image.shape) == 3 and image.shape[2] == 3:
+        # For color images
+        alpha_3d = cv2.merge([alpha, alpha, alpha])
+
+        # Convert to float for calculations
+        image_float = image.astype(np.float32)
+        avg_color_image = np.full_like(image_float, avg_color)
+
+        # Blend original image with average color image
+        final_float = (1 - alpha_3d) * image_float + alpha_3d * avg_color_image
+
+        # Convert back to uint8
+        final = final_float.astype(np.uint8)
+    else:
+        # For grayscale images
+        image_float = image.astype(np.float32)
+        avg_color_image = np.full_like(image_float, avg_color)
+
+        final_float = (1 - alpha) * image_float + alpha * avg_color_image
+        final = final_float.astype(np.uint8)
+
+    return final
+
+def color_region_outside_of_radius(image):
+    # 1) Determine the center and radius
+    h, w = image.shape[:2]
+    center_x, center_y = w // 2, h // 2
+    radius = max(center_x, center_y)  # for safety margin
+
+    # 2) Build a distance map from the center (Euclidean distance)
+    y_indices, x_indices = np.indices((h, w))
+    dist_map = np.sqrt((x_indices - center_x) ** 2 + (y_indices - center_y) ** 2)
+
+    # 3) Create a mask where:
+    #    True (1) = pixels to make black
+    #    False (0) = pixels to keep original
+    mask = dist_map / radius >= 1  # Everything at or beyond radius distance becomes black
+
+    # 2) Calculate the average color of the image
+    if len(image.shape) == 3 and image.shape[2] == 3:
+        # For color images - calculate mean for each channel
+        avg_color = np.mean(image, axis=(0, 1))
+    else:
+        # For grayscale images
+        avg_color = np.mean(image)
+
+    # If the image is color, handle 3 channels
+    if len(image.shape) == 3 and image.shape[2] == 3:
+        # Make a copy to avoid modifying original
+        result = image.copy()
+        # Set pixels where mask is True to black ([0,0,0])
+        #result[mask] = [0, 0, 0]
+        result[mask] = avg_color
+
+        return result
+    else:
+        # For grayscale images
+        result = image.copy()
+        # Set pixels where mask is True to black (0)
+        #result[mask] = 0
+        result[mask] = avg_color
+
+        return result
+
+def blur_region_outside_of_radius(image):
+    # 1) Determine the center and radius
+    h, w = image.shape[:2]
+    center_x, center_y = w // 2, h // 2
+    radius = max(center_x, center_y)  # for safety margin
+
+    # 2) Create a blurred version
+    #    - The kernel size and sigma (20) can be tuned
+    blurred = cv2.GaussianBlur(image, (7, 7), 50)
+
+    # 3) Build a distance map from the center (Euclidean distance)
+    #    dist_map[y, x] = distance of pixel (x, y) from center
+    y_indices, x_indices = np.indices((h, w))
+    dist_map = np.sqrt((x_indices - center_x) ** 2 + (y_indices - center_y) ** 2)
+
+    # 4) Normalize the distance to [0, 1] where
+    #    dist = 0 => center => alpha=0 => 0% blurred, 100% original
+    #    dist >= radius => edges => alpha=1 => 100% blurred
+    alpha = dist_map / radius
+    alpha = np.clip(alpha, 0, 1)  # Ensure we don't exceed [0,1]
+
+    # If the image is color, we need 3 channels of alpha.
+    # If the image is grayscale, you can skip this expansion.
+    if len(image.shape) == 3 and image.shape[2] == 3:
+        alpha_3d = cv2.merge([alpha, alpha, alpha])
+        # Blend: final = alpha * blurred + (1 - alpha)* original
+        # Make sure everything is float to avoid clip/round errors
+        blurred_float = blurred.astype(np.float32)
+        image_float = image.astype(np.float32)
+        final_float = alpha_3d * blurred_float + (1 - alpha_3d) * image_float
+
+        # Convert back to uint8
+        final = final_float.astype(np.uint8)
+
+        return final
+
+    else:
+        # For grayscale images
+        blurred_float = blurred.astype(np.float32)
+        image_float = image.astype(np.float32)
+        final_float = alpha * blurred_float + (1 - alpha) * image_float
+        final = final_float.astype(np.uint8)
+
+        return final
+
+
 def create_mesh(volume, threshold, spacing):
     """
     Extract a surface mesh from the 3D volume using marching cubes.
@@ -148,81 +234,262 @@ def create_mesh(volume, threshold, spacing):
     )
     return verts, faces, normals, values
 
+def interpolate_slices(volume, num_intermediate_slices):
+    """
+    Interpolates between adjacent slices of a 3D volume.
+
+    Parameters:
+    - volume (np.ndarray): The input 3D volume (Z, Y, X).
+    - num_intermediate_slices (int): The number of intermediate slices to add between each pair of slices.
+
+    Returns:
+    - interpolated_volume (np.ndarray): The interpolated 3D volume.
+    """
+    z, y, x = volume.shape
+    new_volume = []
+
+    for i in range(z - 1):
+        # Add the current slice
+        new_volume.append(volume[i])
+
+        # Linearly interpolate intermediate slices
+        for j in range(1, num_intermediate_slices + 1):
+            alpha = j / (num_intermediate_slices + 1)  # Interpolation factor
+            #print(alpha)
+            interpolated_slice = (1 - alpha) * volume[i] + alpha * volume[i + 1]
+            interpolated_slice = np.where(interpolated_slice < 255/2, 0.0, 255.0)
+            #print(np.unique(interpolated_slice))
+            new_volume.append(interpolated_slice)
+
+    # Add the last slice
+    new_volume.append(volume[-1])
+
+    return np.stack(new_volume, axis=0)
+
+# Visualization Function
+def visualize_slices(original_volume, interpolated_volume, num_intermediate_slices, slice_idx):
+    """
+    Visualizes a specific slice from the original and interpolated volumes.
+
+    Parameters:
+    - original_volume (np.ndarray): The original 3D volume.
+    - interpolated_volume (np.ndarray): The interpolated 3D volume.
+    - slice_idx (int): Index of the original slice to visualize.
+    """
+
+    current_idx = slice_idx
+    end_idx = slice_idx + (num_intermediate_slices + 1)*2
+
+    while True:
+        # Display the current slice
+        slice_to_show = interpolated_volume[current_idx].astype(np.uint8)
+        cv2.imshow(f"Slice {current_idx}", slice_to_show)
+
+        # Wait for user input
+        key = cv2.waitKey(0)
+
+        if key == ord('q'):  # Quit on 'q'
+            break
+        elif key == ord('n') and current_idx + 1 <= end_idx:  # Next slice on 'n'
+            cv2.destroyWindow(f"Slice {current_idx}")
+            current_idx += 1
+        elif key == ord('p') and current_idx > slice_idx:  # Previous slice on 'p'
+            cv2.destroyWindow(f"Slice {current_idx}")
+            current_idx -= 1
+
+    # Clean up
+    cv2.destroyAllWindows()
+
+    # Plot the interpolated slice
+    # plt.subplot(1, 2, 2)
+    # plt.imshow(interpolated_volume[interpolated_idx], cmap='gray')
+    # plt.title(f"Interpolated Slice {interpolated_idx}")
+    # plt.axis('off')
+    #
+    # plt.tight_layout()
+    # plt.show()
+
 
 def analyze_run(jpg_filenames):
     # 1) Load the processed 3D volume (in-focus only)
-    volume = load_images_from_directory(jpg_filenames)
+    volume_resampled = load_images_from_directory(jpg_filenames)
 
-    # 2) Compute Otsu's threshold from the entire volume
-    thresh = threshold_otsu(volume.ravel())
-    #print(f"Otsu's threshold = {thresh}")
+    # Interpolation parameters
+    num_intermediate_slices = 1  # Number of intermediate slices between each pair of original slices
 
-    # 3) Create mesh with marching_cubes
-    #    Adjust spacing as needed (dz, dy, dx)
-    verts, faces, normals, values = create_mesh(volume, thresh, spacing=(15,1/3,1/3))
+    # Interpolate the volume
+    interpolated_volume = interpolate_slices(volume_resampled, num_intermediate_slices)
 
-    # 4) Convert faces to the format PyVista expects
+    #############
+    # SLICE VISUALIZATION
+    # This visualizes a few slices, purely experimental, feel free to change
+    # Only run this with a small subset
+    #############
+
+    #original_slice_idx = 0
+    #visualize_slices(volume_resampled, interpolated_volume,  num_intermediate_slices, original_slice_idx)
+
+    # # Check shapes
+    # print(f"Original volume shape: {volume_resampled.shape}")
+    # print(f"Interpolated volume shape: {interpolated_volume.shape}")
+
+    # Now 'volume_resampled' is your new 3D array with finer sampling along Z.
+    #volume_resampled = binary_closing(volume_resampled, ball(4))
+
+    # 3) Compute Otsu's threshold (already done in your code)
+
+    # Maybe unnecessary
+    thresh = threshold_otsu(volume_resampled.ravel())
+
+    # 4) Create mesh with marching_cubes
+    verts, faces, normals, values = create_mesh(interpolated_volume, thresh, spacing=(15/(num_intermediate_slices+1), 1/3, 1/3))
+
+    # 5) Convert faces, create PyVista mesh, etc. (same as before)
     faces_expanded = np.column_stack([np.full(len(faces), 3, dtype=np.int32), faces]).ravel()
-
-    # 5) Create PyVista mesh
     mesh = pv.PolyData(verts, faces_expanded)
 
-    # Suppose 'volume' is a 3D binary array
-    voxel_count = np.count_nonzero(volume)
-
-    # If each voxel's physical size is dx × dy × dz:
-    dx, dy, dz = (1/3, 1/3, 15)  # example
+    # # Optional cleanup / smoothing
+    # mesh = mesh.smooth_taubin(n_iter=100)
+    # mesh = mesh.fill_holes(hole_size=1000)
+    #
+    # 6) Compute volume from the *resampled* binary array
+    voxel_count = np.count_nonzero(volume_resampled)
+    dx, dy, dz = (1/3, 1/3, 15/(num_intermediate_slices+1))
     voxel_volume = dx * dy * dz
-
-    # Total volume in physical units:
     volume_estimate = voxel_count * voxel_volume
-    #print(f"Volume = {volume_estimate} (same units^3)")
-    print(f"MESH VOLUME = {mesh.volume}")
 
-    # 6) Visualize in PyVista
-    plotter = pv.Plotter()
-    plotter.add_mesh(mesh, color='blue', opacity=0.6, show_edges=True)
-    plotter.add_axes()
-    plotter.show_grid()
-    plotter.show()
+    # print(f"NAIVE NUMPY VOLUME ESTIMATE = {volume_estimate}")
+    #
+    # print(f"MESH VOLUME = {mesh.volume}")
 
-    return volume_estimate
+    #######################################
+    # Yet another method for estimating the volume
+    # This should supposedly do a better job of filling holes
+    # However, this does not seem to be the case (from my testing)
+    # Will leave it here just in case anyone wants to try
+    ######################################
+
+
+    # # Convert the mesh to a vtkPolyData
+    # points = vtk.vtkPoints()
+    # for vert in verts:
+    #     points.InsertNextPoint(vert)
+    #
+    # polydata = vtk.vtkPolyData()
+    # polydata.SetPoints(points)
+    #
+    # cells = vtk.vtkCellArray()
+    # for face in faces:
+    #     triangle = vtk.vtkTriangle()
+    #     for i, vert_idx in enumerate(face):
+    #         triangle.GetPointIds().SetId(i, vert_idx)
+    #     cells.InsertNextCell(triangle)
+    #
+    # polydata.SetPolys(cells)
+    #
+    # # Fill holes in the mesh
+    # fill_holes = vtk.vtkFillHolesFilter()
+    # fill_holes.SetInputData(polydata)
+    # fill_holes.SetHoleSize(200)  # Adjust as needed
+    # fill_holes.Update()
+    #
+    # # Smooth the mesh
+    # smoother = vtk.vtkSmoothPolyDataFilter()
+    # smoother.SetInputConnection(fill_holes.GetOutputPort())
+    # smoother.SetNumberOfIterations(30)
+    # smoother.Update()
+    #
+    # # Compute the volume
+    # mass_properties = vtk.vtkMassProperties()
+    # mass_properties.SetInputConnection(smoother.GetOutputPort())
+    # volume_estimate = mass_properties.GetVolume()
+    #
+    # print(f"MESH VOLUME (VTK) = {volume_estimate}")
+    #
+    # # Visualize the VTK-processed mesh using PyVista
+    # vtk_processed_mesh = smoother.GetOutput()
+    #
+    # # Convert VTK mesh to PyVista
+    # pyvista_mesh = pv.wrap(vtk_processed_mesh)
+
+
+    #################
+    ## VISUALIZATION
+    # This creates a very cool looking 3d plot
+    # Hopefully, you should see the outline of the embryo
+    # However, a lot of holes are present so it looks kinda off...
+    # ONLY RUN WITH A SMALL SUBSET of runs selected
+    ###############
+
+    # 7) Visualize in PyVista
+    # plotter = pv.Plotter()
+    # plotter.add_mesh(mesh, color='blue', opacity=0.6, show_edges=True)
+    # plotter.add_axes()
+    # plotter.show_grid()
+    # plotter.show()
+
+    return (volume_estimate/(10**4)), (mesh.volume/(10**4))
+
 
 def main():
-    volume_estimates = []
+    volume_estimates_numpy = []
+    volume_estimates_pyvista_mesh = []
 
     current_file_directory = os.path.dirname(os.path.abspath(__file__))
     directory_files_path = os.path.join(current_file_directory, "all_data_first", "1_F-75")
 
     # ASSUMPTION: all folders for the current dish will have the same amount of runs (images) in them
-    amount_of_runs = len([name for name in os.listdir(directory_files_path)])
+
+    #########################################
+    # Uncomment this if you want all the runs
+    # amount_of_runs = len([name for name in os.listdir(directory_files_path)]) + 1  # add gitkeep file empty run
+    amount_of_runs = 10 + 1  # add gitkeep file empty run
+    ##########################################
 
     folder_names = sorted(
-        [name for name in os.listdir(os.path.join(current_file_directory, "all_data_first"))],
+        [name for name in os.listdir(os.path.join(current_file_directory, "all_data_first")) if ".gitkeep" not in name],
         key=lambda x: int(os.path.basename(x).split("_")[0]))
 
-    #print(folder_names)
-
-    for run in range(1):
+    for run in range(0, amount_of_runs):
         run_file_names = []
         for folder_name in folder_names:
-            run_file_names.append(
-                os.path.join(
+            current_folder_run_file = os.path.join(
                     current_file_directory, "all_data_first", folder_name,
                     os.listdir(
                         os.path.join(
                             current_file_directory, "all_data_first", folder_name
                         )
-                    )[run])
-            )
-        #print(run_file_names)
-        current_run_volume = analyze_run(run_file_names)
-        #print(f"RUN: {run+1}, VOLUME: {current_run_volume}")
-        volume_estimates.append(current_run_volume)
+                    )[run]
+                )
+
+            if ".gitkeep" not in current_folder_run_file:
+                run_file_names.append(current_folder_run_file)
+
+        # if run only traversed .gitkeep from each folder, len will be 0
+        if len(run_file_names) == 0:
+            continue
+
+        current_run_volume_numpy, current_run_volume_mesh = analyze_run(run_file_names)
+        print(f"RUN: {run+1}, NUMPY VOLUME: {current_run_volume_numpy} 10^4 µm")
+        print(f"RUN: {run + 1}, MESH VOLUME: {current_run_volume_mesh} 10^4 µm")
+        volume_estimates_numpy.append(current_run_volume_numpy)
+        volume_estimates_pyvista_mesh.append(current_run_volume_mesh)
+
+    # Create the plot
+    plt.figure(figsize=(10, 6))  # Set the figure size
+    plt.plot(range(0, amount_of_runs - 1), volume_estimates_numpy, label="NUMPY Volume progression")  # Plot the line
+    plt.plot(range(0, amount_of_runs - 1), volume_estimates_pyvista_mesh, label="PYVISTA MESH Volume progression")  # Plot the line
+
+    # Add labels and title
+    plt.xlabel("Runs")  # Label for X-axis
+    plt.ylabel("Volume in 10^4 µm")  # Label for Y-axis
+    plt.title("Volume progression")  # Title of the chart
+
+    # Add grid and legend
+    plt.grid(True)  # Add a grid to the background
+    plt.legend(loc="upper right")  # Add a legend in the top-right corner
+
+    plt.savefig("volume_estimates_progression.png")
 
 if __name__ == "__main__":
     main()
-
-
-    #load_images_from_directory()
-
