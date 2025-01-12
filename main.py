@@ -35,7 +35,11 @@ def load_images_from_directory(jpg_filenames):
 
         # final = blur_region_outside_of_radius(image)
         # final = color_region_outside_of_radius(image)
+
+
         final = gradual_color_region_outside_radius(image)
+
+        #final = image
 
         gray = cv2.cvtColor(final, cv2.COLOR_BGR2GRAY)
 
@@ -51,22 +55,67 @@ def load_images_from_directory(jpg_filenames):
         laplacian_norm = np.uint8(laplacian_norm)
 
         # 4. Threshold to create a binary mask
-        _, focus_mask = cv2.threshold(laplacian_norm, 30, 255, cv2.THRESH_BINARY)
+        _, focus_mask = cv2.threshold(laplacian_norm, 60, 255, cv2.THRESH_BINARY)
+
+        # First, let's apply morphological operations to connect nearby points
+        # Create a kernel for dilation - adjust size based on point spacing
+        kernel = np.ones((4, 4), np.uint8)
+
+        # Dilate the image to connect nearby points
+        dilated = cv2.dilate(focus_mask, kernel, iterations=3)
+
+        # Apply closing to fill small holes
+        closed = cv2.morphologyEx(dilated, cv2.MORPH_CLOSE, kernel)
+
+        # Find the contour of the connected region
+        contours, _ = cv2.findContours(closed,
+                                       cv2.RETR_EXTERNAL,
+                                       cv2.CHAIN_APPROX_SIMPLE)
+
+        # Create an empty image for the outline
+        outline_image = np.zeros_like(gray)
+
+        # Draw only the largest contour
+        # Draw and fill contours
+        if contours:
+            largest_contour = max(contours, key=cv2.contourArea)
+
+            if i == 0 or i == len(jpg_filenames) - 1:
+                # First fill the inside area with white (255)
+                cv2.drawContours(outline_image, [largest_contour], -1, 128, -1)  # -1 thickness means fill
+
+            else:
+                # First fill the inside area with white (255)
+                cv2.drawContours(outline_image, [largest_contour], -1, 255, -1)  # -1 thickness means fill
+
+                # Create a copy of the filled contour
+                contour_only = np.zeros_like(gray)
+                # Draw the contour line itself in gray (128)
+                cv2.drawContours(contour_only, [largest_contour], -1, 128, 2)
+
+                # Combine: where contour is drawn (128), use that value; otherwise keep the fill values
+                outline_image = np.where(contour_only == 128, 128, outline_image)
 
         # morphological operations to clean up noise
-        kernel = np.ones((2, 2), np.uint8)
-        focus_mask_clean = cv2.morphologyEx(focus_mask, cv2.MORPH_OPEN, kernel, iterations=1)
-        focus_mask_clean = cv2.morphologyEx(focus_mask_clean, cv2.MORPH_CLOSE, kernel, iterations=5)
+        # kernel = np.ones((2, 2), np.uint8)
+        # focus_mask_clean = cv2.morphologyEx(focus_mask, cv2.MORPH_OPEN, kernel, iterations=1)
+        # focus_mask_clean = cv2.morphologyEx(focus_mask_clean, cv2.MORPH_CLOSE, kernel, iterations=5)
 
         # 6. Create output (isolate in-focus regions)
-        focus_mask_3d = cv2.merge([focus_mask_clean, focus_mask_clean, focus_mask_clean])
+        focus_mask_3d = cv2.merge([closed, closed, closed])
         in_focus_only = cv2.bitwise_and(final, focus_mask_3d)
 
         # Invert the binary mask
         #focus_mask_clean_inverted = cv2.bitwise_not(focus_mask_clean)
 
+
+
         # Append to list (as a 2D array)
-        slices_3d.append(focus_mask_clean)
+        # slices_3d.append(focus_mask_clean)
+        # slices_3d.append(gray)
+        slices_3d.append(outline_image)
+
+
 
         ###############################
         # VISUALIZATION
@@ -78,11 +127,15 @@ def load_images_from_directory(jpg_filenames):
         # #Show results
         # cv2.imshow("Thresh", thresh)
         # cv2.imshow("Original Image", image)
-        # cv2.imshow("Focus Mask", focus_mask_clean)
-        # cv2.imshow("In-Focus Regions", in_focus_only)
+
+        cv2.imshow("Focus Mask", closed)
+        cv2.imshow("In-Focus Regions", in_focus_only)
+        cv2.imshow("OUTLINE", outline_image)
+
         # cv2.imshow("Blurred result", final)
-        # cv2.waitKey(0)
-        # cv2.destroyAllWindows()
+        cv2.imshow("GRAY", gray)
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
 
 
     # Stack along a new z-axis => shape: (num_slices, height, width)
@@ -257,7 +310,7 @@ def interpolate_slices(volume, num_intermediate_slices):
             alpha = j / (num_intermediate_slices + 1)  # Interpolation factor
             #print(alpha)
             interpolated_slice = (1 - alpha) * volume[i] + alpha * volume[i + 1]
-            interpolated_slice = np.where(interpolated_slice < 255/2, 0.0, 255.0)
+            #interpolated_slice = np.where(interpolated_slice < 255/2, 0.0, 255.0)
             #print(np.unique(interpolated_slice))
             new_volume.append(interpolated_slice)
 
@@ -315,10 +368,10 @@ def analyze_run(jpg_filenames):
     volume_resampled = load_images_from_directory(jpg_filenames)
 
     # Interpolation parameters
-    num_intermediate_slices = 1  # Number of intermediate slices between each pair of original slices
+    #num_intermediate_slices = 1  # Number of intermediate slices between each pair of original slices
 
     # Interpolate the volume
-    interpolated_volume = interpolate_slices(volume_resampled, num_intermediate_slices)
+    #interpolated_volume = interpolate_slices(volume_resampled, num_intermediate_slices)
 
     #############
     # SLICE VISUALIZATION
@@ -342,7 +395,7 @@ def analyze_run(jpg_filenames):
     thresh = threshold_otsu(volume_resampled.ravel())
 
     # 4) Create mesh with marching_cubes
-    verts, faces, normals, values = create_mesh(interpolated_volume, thresh, spacing=(15/(num_intermediate_slices+1), 1/3, 1/3))
+    verts, faces, normals, values = create_mesh(volume_resampled, 128, spacing=(15.0, 1/3, 1/3))
 
     # 5) Convert faces, create PyVista mesh, etc. (same as before)
     faces_expanded = np.column_stack([np.full(len(faces), 3, dtype=np.int32), faces]).ravel()
@@ -354,7 +407,7 @@ def analyze_run(jpg_filenames):
     #
     # 6) Compute volume from the *resampled* binary array
     voxel_count = np.count_nonzero(volume_resampled)
-    dx, dy, dz = (1/3, 1/3, 15/(num_intermediate_slices+1))
+    dx, dy, dz = (1/3, 1/3, 15.0)
     voxel_volume = dx * dy * dz
     volume_estimate = voxel_count * voxel_volume
 
@@ -422,11 +475,11 @@ def analyze_run(jpg_filenames):
     ###############
 
     # 7) Visualize in PyVista
-    # plotter = pv.Plotter()
-    # plotter.add_mesh(mesh, color='blue', opacity=0.6, show_edges=True)
-    # plotter.add_axes()
-    # plotter.show_grid()
-    # plotter.show()
+    plotter = pv.Plotter()
+    plotter.add_mesh(mesh, color='blue', opacity=1, show_edges=True)
+    plotter.add_axes()
+    plotter.show_grid()
+    plotter.show()
 
     return (volume_estimate/(10**4)), (mesh.volume/(10**4))
 
@@ -445,7 +498,7 @@ def main():
     amount_of_runs = len([name for name in os.listdir(directory_files_path)])
     # amount_of_runs = 10
 
-    runs = range(0, 10)
+    runs = range(amount_of_runs-10, amount_of_runs)
     ##########################################
 
     folder_names = sorted(
