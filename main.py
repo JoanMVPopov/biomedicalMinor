@@ -7,6 +7,7 @@ import cv2
 import matplotlib.pyplot as plt
 import vtk
 from scipy import ndimage
+from scipy.spatial.distance import pdist, squareform
 
 from skimage import measure
 from skimage._shared.filters import gaussian
@@ -14,6 +15,176 @@ from skimage.filters import threshold_otsu
 
 import pyvista as pv  # pip install pyvista
 from skimage.morphology import binary_closing, ball
+
+
+def get_feret_diameter(contour):
+    """
+    Calculates the maximum distance between any two points on the contour (Feret diameter).
+
+    Parameters:
+    contour: numpy array of contour points from cv2.findContours
+
+    Returns:
+    max_distance: The Feret diameter
+    (point1, point2): The two points that are furthest apart
+    """
+    # Reshape contour to 2D array of points
+    points = contour.reshape(-1, 2)
+
+    # Calculate pairwise distances between all points
+    distances = pdist(points)
+    distance_matrix = squareform(distances)
+
+    # Find the maximum distance and its indices
+    max_idx = np.unravel_index(np.argmax(distance_matrix), distance_matrix.shape)
+    max_distance = distance_matrix[max_idx] / 3
+
+    # Get the actual points
+    point1 = tuple(points[max_idx[0]])
+    point2 = tuple(points[max_idx[1]])
+
+    return max_distance, (point1, point2)
+
+
+def get_equivalent_diameter(contour):
+    """
+    Calculates the diameter of a circle with the same area as the contour.
+
+    Parameters:
+    contour: numpy array of contour points from cv2.findContours
+
+    Returns:
+    diameter: The equivalent circular diameter
+    center: The centroid of the contour
+    """
+    # Calculate area
+    area = cv2.contourArea(contour)
+
+    # Calculate equivalent diameter
+    diameter = np.sqrt(4 * area / np.pi) / 3
+
+    # Calculate centroid
+    M = cv2.moments(contour)
+    if M['m00'] != 0:
+        cx = int(M['m10'] / M['m00'])
+        cy = int(M['m01'] / M['m00'])
+        center = (cx, cy)
+    else:
+        center = None
+
+    return diameter, center
+
+
+def get_minimum_enclosing_circle(contour):
+    """
+    Finds the minimum enclosing circle of the contour.
+
+    Parameters:
+    contour: numpy array of contour points from cv2.findContours
+
+    Returns:
+    diameter: The diameter of the minimum enclosing circle
+    (center, radius): The center point and radius of the circle
+    """
+    center, radius = cv2.minEnclosingCircle(contour)
+    diameter = 2 * radius / 3
+    return diameter, (center, radius)
+
+
+def visualize_diameters(image, contour, area_ratio):
+    """
+    Visualizes different diameter measurements on the image.
+
+    Parameters:
+    image: Original image
+    contour: numpy array of contour points from cv2.findContours
+
+    Returns:
+    annotated_image: Image with diameter measurements drawn
+    """
+    # Create a copy for visualization
+    vis_image = image.copy()
+    if len(vis_image.shape) == 2:
+        vis_image = cv2.cvtColor(vis_image, cv2.COLOR_GRAY2BGR)
+
+    # Draw contour
+    cv2.drawContours(vis_image, [contour], -1, (0, 255, 0), 2)
+
+    # Draw Feret diameter
+    feret_diameter, (point1, point2) = get_feret_diameter(contour)
+    cv2.line(vis_image, point1, point2, (255, 0, 0), 2)
+    cv2.putText(vis_image, f'Feret: {feret_diameter:.1f}',
+                (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+
+    # Draw equivalent circular diameter
+    equiv_diameter, center = get_equivalent_diameter(contour)
+    if center is not None:
+        radius = int(equiv_diameter / 2)
+        cv2.circle(vis_image, center, radius, (0, 0, 255), 2)
+        cv2.putText(vis_image, f'Equivalent: {equiv_diameter:.1f}',
+                    (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+
+    # Draw minimum enclosing circle
+    min_diameter, (min_center, min_radius) = get_minimum_enclosing_circle(contour)
+    center_point = (int(min_center[0]), int(min_center[1]))
+    cv2.circle(vis_image, center_point, int(min_radius), (255, 255, 0), 2)
+    cv2.putText(vis_image, f'Min enclosing: {min_diameter:.1f}',
+                (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+
+    # Add area ratio text
+    cv2.putText(vis_image, f'Area ratio: {area_ratio:.1f}%',
+                (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+
+    return vis_image
+
+
+# Example usage in your existing code:
+def analyze_contour_in_image(image):
+    """
+    Analyzes contour diameters in an image.
+
+    Parameters:
+    image: Input image (grayscale or color)
+
+    Returns:
+    Dictionary containing different diameter measurements
+    """
+    # Convert to grayscale if needed
+    if len(image.shape) == 3:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = image
+
+    # Find contours
+    contours, _ = cv2.findContours(gray, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    if not contours:
+        return None
+
+    # Get largest contour
+    largest_contour = max(contours, key=cv2.contourArea)
+
+    # Calculate different diameters
+    feret_diameter, feret_points = get_feret_diameter(largest_contour)
+    equiv_diameter, center = get_equivalent_diameter(largest_contour)
+    min_diameter, (min_center, min_radius) = get_minimum_enclosing_circle(largest_contour)
+
+    # Calculate the area ratio
+    contour_area = cv2.contourArea(largest_contour)
+    circle_area = np.pi * (min_radius ** 2)
+    area_ratio = (contour_area / circle_area) * 100  # Convert to percentage
+
+    # Visualize
+    annotated_image = visualize_diameters(image, largest_contour, area_ratio)
+
+
+    return {
+        'feret_diameter': feret_diameter,
+        'equivalent_diameter': equiv_diameter,
+        'minimum_enclosing_diameter': min_diameter,
+        'area_ratio': area_ratio,
+        'annotated_image': annotated_image
+    }
 
 
 def load_images_from_directory(jpg_filenames):
@@ -28,8 +199,13 @@ def load_images_from_directory(jpg_filenames):
     # maybe we can skip them??
     #for i, j in enumerate(jpg_filenames[4:len(jpg_filenames)]):
 
-    for i, j in enumerate(jpg_filenames):
+    ############
+    # Diameter is calculated in a naive manner
+    # Only take F +/-15 and F0 since those seem to provide best contrast between zygote border and bg
+    diameter = 0.0
+    area_ratio = 0.0
 
+    for i, j in enumerate(jpg_filenames):
         image = cv2.imread(j)
         # gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
@@ -55,11 +231,11 @@ def load_images_from_directory(jpg_filenames):
         laplacian_norm = np.uint8(laplacian_norm)
 
         # 4. Threshold to create a binary mask
-        _, focus_mask = cv2.threshold(laplacian_norm, 60, 255, cv2.THRESH_BINARY)
+        _, focus_mask = cv2.threshold(laplacian_norm, 80, 255, cv2.THRESH_BINARY)
 
         # First, let's apply morphological operations to connect nearby points
         # Create a kernel for dilation - adjust size based on point spacing
-        kernel = np.ones((4, 4), np.uint8)
+        kernel = np.ones((5, 5), np.uint8)
 
         # Dilate the image to connect nearby points
         dilated = cv2.dilate(focus_mask, kernel, iterations=3)
@@ -75,26 +251,53 @@ def load_images_from_directory(jpg_filenames):
         # Create an empty image for the outline
         outline_image = np.zeros_like(gray)
 
+
         # Draw only the largest contour
         # Draw and fill contours
         if contours:
-            largest_contour = max(contours, key=cv2.contourArea)
+            #largest_contour = max(contours, key=cv2.contourArea)
 
+            # Close first and last contour, needed for proper 3d mesh
             if i == 0 or i == len(jpg_filenames) - 1:
-                # First fill the inside area with white (255)
-                cv2.drawContours(outline_image, [largest_contour], -1, 128, -1)  # -1 thickness means fill
+                cv2.drawContours(outline_image, contours, -1, 128, -1)  # -1 thickness means fill
 
             else:
                 # First fill the inside area with white (255)
-                cv2.drawContours(outline_image, [largest_contour], -1, 255, -1)  # -1 thickness means fill
+                cv2.drawContours(outline_image, contours, -1, 255, -1)  # -1 thickness means fill
 
                 # Create a copy of the filled contour
                 contour_only = np.zeros_like(gray)
                 # Draw the contour line itself in gray (128)
-                cv2.drawContours(contour_only, [largest_contour], -1, 128, 2)
+                cv2.drawContours(contour_only, contours, -1, 128, 2)
 
                 # Combine: where contour is drawn (128), use that value; otherwise keep the fill values
                 outline_image = np.where(contour_only == 128, 128, outline_image)
+
+            ############################################################
+            ## DIAMETER APPROXIMATION
+            ###########################################################
+
+            # Get diameter measurements
+            results = analyze_contour_in_image(outline_image)
+
+            # print(results)
+
+            if results:
+                # print(f"Slice {i} measurements:")
+                # print(f"Feret diameter: {results['feret_diameter']:.2f}")
+                # print(f"Equivalent diameter: {results['equivalent_diameter']:.2f}")
+                # print(f"Minimum enclosing diameter: {results['minimum_enclosing_diameter']:.2f}")
+
+                # Take F+/-15 and F0 as diameter for embryo
+                if i >= 4 and i <= 6:
+                    if results['area_ratio'] > area_ratio:
+                        diameter = results['feret_diameter']
+
+                # Display annotated image
+                cv2.imshow(f"Diameter measurements - Slice {i}", results['annotated_image'])
+                cv2.waitKey(0)
+
+            ##############################################################
 
         # morphological operations to clean up noise
         # kernel = np.ones((2, 2), np.uint8)
@@ -128,12 +331,14 @@ def load_images_from_directory(jpg_filenames):
         # cv2.imshow("Thresh", thresh)
         # cv2.imshow("Original Image", image)
 
-        cv2.imshow("Focus Mask", closed)
-        cv2.imshow("In-Focus Regions", in_focus_only)
-        cv2.imshow("OUTLINE", outline_image)
+        image_name = j.split("all_data_first")[-1]
+
+        cv2.imshow(f"Focus Mask {image_name}", closed)
+        cv2.imshow(f"In-Focus Regions {image_name}", in_focus_only)
+        cv2.imshow(f"OUTLINE {image_name}", outline_image)
 
         # cv2.imshow("Blurred result", final)
-        cv2.imshow("GRAY", gray)
+        cv2.imshow(f"GRAY {image_name}", gray)
         cv2.waitKey(0)
         cv2.destroyAllWindows()
 
@@ -141,14 +346,14 @@ def load_images_from_directory(jpg_filenames):
     # Stack along a new z-axis => shape: (num_slices, height, width)
     volume = np.stack(slices_3d, axis=0)
 
-    return volume
+    return volume, diameter
 
 
 def gradual_color_region_outside_radius(image):
     # 1) Determine the center and radius
     h, w = image.shape[:2]
     center_x, center_y = w // 2, h // 2
-    radius = max(center_x, center_y)  # for safety margin
+    radius = max(center_x, center_y) + 200  # for safety margin
 
     # 2) Calculate the average color
     if len(image.shape) == 3 and image.shape[2] == 3:
@@ -353,7 +558,7 @@ def visualize_slices(original_volume, interpolated_volume, num_intermediate_slic
     # Clean up
     cv2.destroyAllWindows()
 
-    # Plot the interpolated slice
+    #Plot the interpolated slice
     # plt.subplot(1, 2, 2)
     # plt.imshow(interpolated_volume[interpolated_idx], cmap='gray')
     # plt.title(f"Interpolated Slice {interpolated_idx}")
@@ -365,7 +570,7 @@ def visualize_slices(original_volume, interpolated_volume, num_intermediate_slic
 
 def analyze_run(jpg_filenames):
     # 1) Load the processed 3D volume (in-focus only)
-    volume_resampled = load_images_from_directory(jpg_filenames)
+    volume_resampled, diameter = load_images_from_directory(jpg_filenames)
 
     # Interpolation parameters
     #num_intermediate_slices = 1  # Number of intermediate slices between each pair of original slices
@@ -411,61 +616,6 @@ def analyze_run(jpg_filenames):
     voxel_volume = dx * dy * dz
     volume_estimate = voxel_count * voxel_volume
 
-    # print(f"NAIVE NUMPY VOLUME ESTIMATE = {volume_estimate}")
-    #
-    # print(f"MESH VOLUME = {mesh.volume}")
-
-    #######################################
-    # Yet another method for estimating the volume
-    # This should supposedly do a better job of filling holes
-    # However, this does not seem to be the case (from my testing)
-    # Will leave it here just in case anyone wants to try
-    ######################################
-
-
-    # # Convert the mesh to a vtkPolyData
-    # points = vtk.vtkPoints()
-    # for vert in verts:
-    #     points.InsertNextPoint(vert)
-    #
-    # polydata = vtk.vtkPolyData()
-    # polydata.SetPoints(points)
-    #
-    # cells = vtk.vtkCellArray()
-    # for face in faces:
-    #     triangle = vtk.vtkTriangle()
-    #     for i, vert_idx in enumerate(face):
-    #         triangle.GetPointIds().SetId(i, vert_idx)
-    #     cells.InsertNextCell(triangle)
-    #
-    # polydata.SetPolys(cells)
-    #
-    # # Fill holes in the mesh
-    # fill_holes = vtk.vtkFillHolesFilter()
-    # fill_holes.SetInputData(polydata)
-    # fill_holes.SetHoleSize(200)  # Adjust as needed
-    # fill_holes.Update()
-    #
-    # # Smooth the mesh
-    # smoother = vtk.vtkSmoothPolyDataFilter()
-    # smoother.SetInputConnection(fill_holes.GetOutputPort())
-    # smoother.SetNumberOfIterations(30)
-    # smoother.Update()
-    #
-    # # Compute the volume
-    # mass_properties = vtk.vtkMassProperties()
-    # mass_properties.SetInputConnection(smoother.GetOutputPort())
-    # volume_estimate = mass_properties.GetVolume()
-    #
-    # print(f"MESH VOLUME (VTK) = {volume_estimate}")
-    #
-    # # Visualize the VTK-processed mesh using PyVista
-    # vtk_processed_mesh = smoother.GetOutput()
-    #
-    # # Convert VTK mesh to PyVista
-    # pyvista_mesh = pv.wrap(vtk_processed_mesh)
-
-
     #################
     ## VISUALIZATION
     # This creates a very cool looking 3d plot
@@ -474,19 +624,22 @@ def analyze_run(jpg_filenames):
     # ONLY RUN WITH A SMALL SUBSET of runs selected
     ###############
 
-    # 7) Visualize in PyVista
-    plotter = pv.Plotter()
-    plotter.add_mesh(mesh, color='blue', opacity=1, show_edges=True)
-    plotter.add_axes()
-    plotter.show_grid()
-    plotter.show()
+    #7) Visualize in PyVista
+    # plotter = pv.Plotter()
+    # plotter.add_mesh(mesh, color='blue', opacity=1, show_edges=True)
+    # plotter.add_axes()
+    # plotter.show_grid()
+    # plotter.show()
 
-    return (volume_estimate/(10**4)), (mesh.volume/(10**4))
+    sphere_volume_estimate = (4/3) * np.pi * ((diameter/2)**3)
+
+    return volume_estimate/(10**4), mesh.volume/(10**4), sphere_volume_estimate/(10**4)
 
 
 def main():
     volume_estimates_numpy = []
     volume_estimates_pyvista_mesh = []
+    volume_estimates_sphere = []
 
     current_file_directory = os.path.dirname(os.path.abspath(__file__))
     directory_files_path = os.path.join(current_file_directory, "all_data_first", "1_F-75")
@@ -499,6 +652,7 @@ def main():
     # amount_of_runs = 10
 
     runs = range(amount_of_runs-10, amount_of_runs)
+    #runs = range(0, 10)
     ##########################################
 
     folder_names = sorted(
@@ -527,11 +681,13 @@ def main():
             gitkeep_index = run
             continue
 
-        current_run_volume_numpy, current_run_volume_mesh = analyze_run(run_file_names)
+        current_run_volume_numpy, current_run_volume_mesh, current_run_sphere_volume_estimate = analyze_run(run_file_names)
         print(f"RUN: {run+1}, NUMPY VOLUME: {current_run_volume_numpy} 10^4 µm")
         print(f"RUN: {run + 1}, MESH VOLUME: {current_run_volume_mesh} 10^4 µm")
+        print(f"RUN: {run + 1}, SPHERE VOLUME: {current_run_sphere_volume_estimate} 10^4 µm")
         volume_estimates_numpy.append(current_run_volume_numpy)
         volume_estimates_pyvista_mesh.append(current_run_volume_mesh)
+        volume_estimates_sphere.append(current_run_sphere_volume_estimate)
 
     runs_list = list(runs)
     if gitkeep_index != -1:
@@ -541,6 +697,7 @@ def main():
     plt.figure(figsize=(10, 6))  # Set the figure size
     plt.plot(runs_list, volume_estimates_numpy, label="NUMPY Volume progression")  # Plot the line
     plt.plot(runs_list, volume_estimates_pyvista_mesh, label="PYVISTA MESH Volume progression")  # Plot the line
+    plt.plot(runs_list, volume_estimates_sphere, label="SPHERE Volume progression")  # Plot the line
 
     # Add labels and title
     plt.xlabel("Runs")  # Label for X-axis
