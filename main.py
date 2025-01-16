@@ -16,6 +16,24 @@ from skimage.filters import threshold_otsu
 import pyvista as pv  # pip install pyvista
 from skimage.morphology import binary_closing, ball
 
+from sklearn.model_selection import ParameterGrid
+from sklearn.preprocessing import MinMaxScaler
+
+
+def get_parameter_options():
+    return {
+        'laplacian_k_size': [1,3,5,7,9],
+        'laplacian_threshold': [40,50,60,70,80,90],
+        'dilation_kernel_size': [(1,1), (2,2), (3,3), (4,4), (5,5)],
+        'dilation_iterations': [1,2,3,4,5,6]
+    }
+    # return {
+    #     'laplacian_k_size': [1, 3],
+    #     'laplacian_threshold': [40, 50],
+    #     'dilation_kernel_size': [(1, 1), (2, 2)],
+    #     'dilation_iterations': [1, 2]
+    # }
+
 
 def get_feret_diameter(contour):
     """
@@ -91,7 +109,7 @@ def get_minimum_enclosing_circle(contour):
     return diameter, (center, radius)
 
 
-def visualize_diameters(image, contour, area_ratio):
+def visualize_diameters(image, contour, area_ratio, avg_distance_to_enclosing):
     """
     Visualizes different diameter measurements on the image.
 
@@ -135,6 +153,10 @@ def visualize_diameters(image, contour, area_ratio):
     cv2.putText(vis_image, f'Area ratio: {area_ratio:.1f}%',
                 (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
+    # Add area ratio text
+    cv2.putText(vis_image, f'Avg distance to enclosing: {avg_distance_to_enclosing:.1f}',
+                (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+
     return vis_image
 
 
@@ -174,20 +196,59 @@ def analyze_contour_in_image(image):
     circle_area = np.pi * (min_radius ** 2)
     area_ratio = (contour_area / circle_area) * 100  # Convert to percentage
 
-    # Visualize
-    annotated_image = visualize_diameters(image, largest_contour, area_ratio)
+    avg_distance_to_enclosing = calc_contour_to_circle_perimeter_distance(largest_contour, min_center[0], min_center[1], min_radius)
 
+    # Visualize
+    annotated_image = visualize_diameters(image, largest_contour, area_ratio, avg_distance_to_enclosing)
 
     return {
         'feret_diameter': feret_diameter,
         'equivalent_diameter': equiv_diameter,
         'minimum_enclosing_diameter': min_diameter,
         'area_ratio': area_ratio,
+        'avg_distance_to_enclosing': avg_distance_to_enclosing,
         'annotated_image': annotated_image
     }
 
+def calc_contour_to_circle_perimeter_distance(contour, center_x, center_y, radius):
+    """
+    Calculate average distance from contour points to the perimeter of their enclosing circle.
+    A smaller average means a tighter fit.
 
-def load_images_from_directory(jpg_filenames):
+    Parameters:
+    contour: numpy array of shape (N, 1, 2) containing contour points
+
+    Returns:
+    float: average distance
+    numpy.ndarray: all distances
+    tuple: circle parameters (center_x, center_y, radius)
+    """
+    # Convert contour to normal array of points
+    contour_points = contour.reshape(-1, 2)
+
+    # For each point, calculate distance to center
+    distances_to_center = np.sqrt(
+        (contour_points[:, 0] - center_x) ** 2 +
+        (contour_points[:, 1] - center_y) ** 2
+    )
+
+    # TODO: Figure out how to improve
+
+    # The distance to circle perimeter is the difference between
+    # the radius and the distance to center
+    distances_to_perimeter = radius - distances_to_center
+
+    # Sort distances in descending order and select the top 10
+    top_distances = np.sort(distances_to_perimeter)[-10:][::-1]
+
+    # Calculate average distance
+    avg_distance = np.mean(top_distances)
+
+    return avg_distance
+
+
+
+def load_images_from_directory(jpg_filenames, params):
     """
     Load JPG images from a 'files' subdirectory, convert each to grayscale,
     and stack them into a 3D numpy volume (shape: [Z, Y, X]).
@@ -199,11 +260,8 @@ def load_images_from_directory(jpg_filenames):
     # maybe we can skip them??
     #for i, j in enumerate(jpg_filenames[4:len(jpg_filenames)]):
 
-    ############
-    # Diameter is calculated in a naive manner
-    # Only take F +/-15 and F0 since those seem to provide best contrast between zygote border and bg
     diameter = 0.0
-    area_ratio = 0.0
+    adte_min = np.inf
 
     for i, j in enumerate(jpg_filenames):
         image = cv2.imread(j)
@@ -223,7 +281,7 @@ def load_images_from_directory(jpg_filenames):
         _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
         # compute Laplacian
-        laplacian = cv2.Laplacian(gray, cv2.CV_64F, ksize=5)
+        laplacian = cv2.Laplacian(gray, cv2.CV_64F, ksize=params['laplacian_k_size'])
         # Take absolute value to get magnitude
         laplacian_abs = np.absolute(laplacian)
 
@@ -231,14 +289,14 @@ def load_images_from_directory(jpg_filenames):
         laplacian_norm = np.uint8(laplacian_norm)
 
         # 4. Threshold to create a binary mask
-        _, focus_mask = cv2.threshold(laplacian_norm, 80, 255, cv2.THRESH_BINARY)
+        _, focus_mask = cv2.threshold(laplacian_norm, params['laplacian_threshold'], 255, cv2.THRESH_BINARY)
 
         # First, let's apply morphological operations to connect nearby points
         # Create a kernel for dilation - adjust size based on point spacing
-        kernel = np.ones((5, 5), np.uint8)
+        kernel = np.ones(params['dilation_kernel_size'], np.uint8)
 
         # Dilate the image to connect nearby points
-        dilated = cv2.dilate(focus_mask, kernel, iterations=3)
+        dilated = cv2.dilate(focus_mask, kernel, iterations=params['dilation_iterations'])
 
         # Apply closing to fill small holes
         closed = cv2.morphologyEx(dilated, cv2.MORPH_CLOSE, kernel)
@@ -288,14 +346,24 @@ def load_images_from_directory(jpg_filenames):
                 # print(f"Equivalent diameter: {results['equivalent_diameter']:.2f}")
                 # print(f"Minimum enclosing diameter: {results['minimum_enclosing_diameter']:.2f}")
 
-                # Take F+/-15 and F0 as diameter for embryo
-                if i >= 4 and i <= 6:
-                    if results['area_ratio'] > area_ratio:
+
+                #####################################################
+                # TODO: Figure out how to improve
+
+                # Take F-15, F0, F15, F30 into consideration for embryo diameter
+                if i >= 4 and i <= 7:
+                    if results['avg_distance_to_enclosing'] < adte_min:
                         diameter = results['feret_diameter']
 
-                # Display annotated image
-                cv2.imshow(f"Diameter measurements - Slice {i}", results['annotated_image'])
-                cv2.waitKey(0)
+
+                # I used this by default until I replaced it with the code above
+                # if i == 5:
+                #     diameter = results['feret_diameter']
+                ######################################################
+
+                # # Display annotated image
+                # cv2.imshow(f"Diameter measurements - Slice {i}", results['annotated_image'])
+                # cv2.waitKey(0)
 
             ##############################################################
 
@@ -331,16 +399,16 @@ def load_images_from_directory(jpg_filenames):
         # cv2.imshow("Thresh", thresh)
         # cv2.imshow("Original Image", image)
 
-        image_name = j.split("all_data_first")[-1]
-
-        cv2.imshow(f"Focus Mask {image_name}", closed)
-        cv2.imshow(f"In-Focus Regions {image_name}", in_focus_only)
-        cv2.imshow(f"OUTLINE {image_name}", outline_image)
-
-        # cv2.imshow("Blurred result", final)
-        cv2.imshow(f"GRAY {image_name}", gray)
-        cv2.waitKey(0)
-        cv2.destroyAllWindows()
+        # image_name = j.split("all_data_first")[-1]
+        #
+        # cv2.imshow(f"Focus Mask {image_name}", closed)
+        # cv2.imshow(f"In-Focus Regions {image_name}", in_focus_only)
+        # cv2.imshow(f"OUTLINE {image_name}", outline_image)
+        #
+        # # cv2.imshow("Blurred result", final)
+        # cv2.imshow(f"GRAY {image_name}", gray)
+        # cv2.waitKey(0)
+        # cv2.destroyAllWindows()
 
 
     # Stack along a new z-axis => shape: (num_slices, height, width)
@@ -353,7 +421,7 @@ def gradual_color_region_outside_radius(image):
     # 1) Determine the center and radius
     h, w = image.shape[:2]
     center_x, center_y = w // 2, h // 2
-    radius = max(center_x, center_y) + 200  # for safety margin
+    radius = max(center_x, center_y) + 100  # for safety margin
 
     # 2) Calculate the average color
     if len(image.shape) == 3 and image.shape[2] == 3:
@@ -568,9 +636,9 @@ def visualize_slices(original_volume, interpolated_volume, num_intermediate_slic
     # plt.show()
 
 
-def analyze_run(jpg_filenames):
+def analyze_run(jpg_filenames, params):
     # 1) Load the processed 3D volume (in-focus only)
-    volume_resampled, diameter = load_images_from_directory(jpg_filenames)
+    volume_resampled, diameter = load_images_from_directory(jpg_filenames, params)
 
     # Interpolation parameters
     #num_intermediate_slices = 1  # Number of intermediate slices between each pair of original slices
@@ -599,69 +667,73 @@ def analyze_run(jpg_filenames):
     # Maybe unnecessary
     thresh = threshold_otsu(volume_resampled.ravel())
 
-    # 4) Create mesh with marching_cubes
-    verts, faces, normals, values = create_mesh(volume_resampled, 128, spacing=(15.0, 1/3, 1/3))
+    mesh_volume = 0
 
-    # 5) Convert faces, create PyVista mesh, etc. (same as before)
-    faces_expanded = np.column_stack([np.full(len(faces), 3, dtype=np.int32), faces]).ravel()
-    mesh = pv.PolyData(verts, faces_expanded)
+    try:
 
-    # # Optional cleanup / smoothing
-    # mesh = mesh.smooth_taubin(n_iter=100)
-    # mesh = mesh.fill_holes(hole_size=1000)
-    #
-    # 6) Compute volume from the *resampled* binary array
-    voxel_count = np.count_nonzero(volume_resampled)
-    dx, dy, dz = (1/3, 1/3, 15.0)
-    voxel_volume = dx * dy * dz
-    volume_estimate = voxel_count * voxel_volume
+        # 4) Create mesh with marching_cubes
+        verts, faces, normals, values = create_mesh(volume_resampled, 128, spacing=(15.0, 1/3, 1/3))
 
-    #################
-    ## VISUALIZATION
-    # This creates a very cool looking 3d plot
-    # Hopefully, you should see the outline of the embryo
-    # However, a lot of holes are present so it looks kinda off...
-    # ONLY RUN WITH A SMALL SUBSET of runs selected
-    ###############
+        # 5) Convert faces, create PyVista mesh, etc. (same as before)
+        faces_expanded = np.column_stack([np.full(len(faces), 3, dtype=np.int32), faces]).ravel()
+        mesh = pv.PolyData(verts, faces_expanded)
 
-    #7) Visualize in PyVista
-    # plotter = pv.Plotter()
-    # plotter.add_mesh(mesh, color='blue', opacity=1, show_edges=True)
-    # plotter.add_axes()
-    # plotter.show_grid()
-    # plotter.show()
+        # # Optional cleanup / smoothing
+        # mesh = mesh.smooth_taubin(n_iter=100)
+        # mesh = mesh.fill_holes(hole_size=1000)
 
-    sphere_volume_estimate = (4/3) * np.pi * ((diameter/2)**3)
+        mesh_volume = mesh.volume
 
-    return volume_estimate/(10**4), mesh.volume/(10**4), sphere_volume_estimate/(10**4)
+        #################
+        ## VISUALIZATION
+        # This creates a very cool looking 3d plot
+        # Hopefully, you should see the outline of the embryo
+        # However, a lot of holes are present so it looks kinda off...
+        # ONLY RUN WITH A SMALL SUBSET of runs selected
+        ###############
+
+        # # 7) Visualize in PyVista
+        # plotter = pv.Plotter()
+        # plotter.add_mesh(mesh, color='blue', opacity=1, show_edges=True)
+        #
+        # # Create the sphere mesh
+        # radius = diameter / 2
+        # sphere = pv.Sphere(radius=radius, center=(0, 0, 0))
+        #
+        # # Add the sphere to the plot
+        # plotter.add_mesh(sphere, color='red', show_edges=True)
+        #
+        # plotter.add_axes()
+        # plotter.show_grid()
+        # plotter.show()
+    except Exception as e:
+        print("Mesh could not be created due to an error, likely related to the given iso value (128). Nevertheless, mesh volume will be set to 0. Moving on...")
+    finally:
+        # 6) Compute volume from the *resampled* binary array
+        voxel_count = np.count_nonzero(volume_resampled)
+        dx, dy, dz = (1 / 3, 1 / 3, 15.0)
+        voxel_volume = dx * dy * dz
+        volume_estimate = voxel_count * voxel_volume
+
+        sphere_volume_estimate = (4 / 3) * np.pi * ((diameter / 2) ** 3)
+
+        return volume_estimate / (10 ** 4), mesh_volume / (10 ** 4), sphere_volume_estimate / (10 ** 4), diameter
 
 
-def main():
+
+def do_runs(runs_range, folder_names, current_file_directory, params):
     volume_estimates_numpy = []
     volume_estimates_pyvista_mesh = []
     volume_estimates_sphere = []
 
-    current_file_directory = os.path.dirname(os.path.abspath(__file__))
-    directory_files_path = os.path.join(current_file_directory, "all_data_first", "1_F-75")
+    diameter_list = []
 
-    # ASSUMPTION: all folders for the current dish will have the same amount of runs (images) in them
-
-    #########################################
-    # Uncomment this if you want all the runs
-    amount_of_runs = len([name for name in os.listdir(directory_files_path)])
-    # amount_of_runs = 10
-
-    runs = range(amount_of_runs-10, amount_of_runs)
-    #runs = range(0, 10)
-    ##########################################
-
-    folder_names = sorted(
-        [name for name in os.listdir(os.path.join(current_file_directory, "all_data_first")) if ".gitkeep" not in name],
-        key=lambda x: int(os.path.basename(x).split("_")[0]))
+    pairwise_abs_diff = []
+    current_to_first_abs_diff = []
 
     gitkeep_index = -1
 
-    for run in runs:
+    for run in runs_range:
         run_file_names = []
         for folder_name in folder_names:
             current_folder_run_file = os.path.join(
@@ -681,15 +753,36 @@ def main():
             gitkeep_index = run
             continue
 
-        current_run_volume_numpy, current_run_volume_mesh, current_run_sphere_volume_estimate = analyze_run(run_file_names)
+        current_run_volume_numpy, current_run_volume_mesh, current_run_sphere_volume_estimate, diameter = analyze_run(run_file_names, params)
         print(f"RUN: {run+1}, NUMPY VOLUME: {current_run_volume_numpy} 10^4 µm")
         print(f"RUN: {run + 1}, MESH VOLUME: {current_run_volume_mesh} 10^4 µm")
         print(f"RUN: {run + 1}, SPHERE VOLUME: {current_run_sphere_volume_estimate} 10^4 µm")
+        print(f"RUN: {run + 1}, DIAMETER: {diameter}")
+
+        if len(diameter_list) > 0:
+            diameter_penalty = 0
+            pairwise_abs_diff_to_append = (abs(diameter - diameter_list[-1]))**2
+            current_to_first_abs_diff_to_append = (abs(diameter - diameter_list[0]))**2
+
+            if diameter < 100:
+                #diameter_penalty = abs((diameter/100) - 1)
+                diameter_penalty = abs(diameter - 100)**3
+            elif diameter > 150:
+                #diameter_penalty = abs((diameter/150) - 1)
+                diameter_penalty = abs(diameter - 100)**3
+
+            # pairwise_abs_diff.append(pairwise_abs_diff_to_append + (diameter_penalty * pairwise_abs_diff_to_append)**2)
+            # current_to_first_abs_diff.append(current_to_first_abs_diff_to_append + (diameter_penalty * current_to_first_abs_diff_to_append)**2)
+
+            pairwise_abs_diff.append(pairwise_abs_diff_to_append + diameter_penalty)
+            current_to_first_abs_diff.append(current_to_first_abs_diff_to_append + diameter_penalty)
+
+        diameter_list.append(diameter)
         volume_estimates_numpy.append(current_run_volume_numpy)
         volume_estimates_pyvista_mesh.append(current_run_volume_mesh)
         volume_estimates_sphere.append(current_run_sphere_volume_estimate)
 
-    runs_list = list(runs)
+    runs_list = list(runs_range)
     if gitkeep_index != -1:
         runs_list.pop(gitkeep_index)
 
@@ -708,7 +801,115 @@ def main():
     plt.grid(True)  # Add a grid to the background
     plt.legend(loc="upper right")  # Add a legend in the top-right corner
 
-    plt.savefig("volume_estimates_progression.png")
+    plt.savefig(f"volume_progression_lks_{params['laplacian_k_size']}_lt_{params['laplacian_threshold']}_dks_{params['dilation_kernel_size']}_di_{params['dilation_iterations']}.png")
+    plt.close()
+
+    return pairwise_abs_diff, current_to_first_abs_diff, diameter_list
+
+def main():
+    current_file_directory = os.path.dirname(os.path.abspath(__file__))
+    directory_files_path = os.path.join(current_file_directory, "all_data_first", "1_F-75")
+
+    # ASSUMPTION: all folders for the current dish will have the same amount of runs (images) in them
+
+    #########################################
+    # Uncomment this if you want all the runs
+    amount_of_runs = len([name for name in os.listdir(directory_files_path)])
+    # amount_of_runs = 10
+
+    #runs = range(amount_of_runs-10, amount_of_runs)
+    runs = range(0, 10)
+    ##########################################
+
+    folder_names = sorted(
+        [name for name in os.listdir(os.path.join(current_file_directory, "all_data_first")) if ".gitkeep" not in name],
+        key=lambda x: int(os.path.basename(x).split("_")[0]))
+
+
+    ######################################
+    ## USE THIS FOR ALL POSSIBLE COMBINATIONS
+
+    # parameters = get_parameter_options()
+    #
+    # grid = ParameterGrid(parameters)
+
+    ###################################
+
+    grid = [
+        {'dilation_iterations': 1, 'dilation_kernel_size': (2, 2), 'laplacian_k_size': 5, 'laplacian_threshold': 40},
+        {'dilation_iterations': 1, 'dilation_kernel_size': (2, 2), 'laplacian_k_size': 7, 'laplacian_threshold': 40},
+        {'dilation_iterations': 2, 'dilation_kernel_size': (4, 4), 'laplacian_k_size': 7, 'laplacian_threshold': 60},
+        {'dilation_iterations': 1, 'dilation_kernel_size': (5, 5), 'laplacian_k_size': 7, 'laplacian_threshold': 60}
+    ]
+
+    options = []
+    pairwise_total_sum_list = []
+    current_to_first_total_sum_list = []
+
+    # Iterate through all possible combinations (or hardcoded ones)
+    for params in grid:
+
+        print("------------------------")
+        print(f"CURRENT PARAMS: {params}")
+
+        pairwise_abs_diff, current_to_first_abs_diff, _ = do_runs(runs, folder_names,
+                                                              current_file_directory, params)
+
+        # First one records distance between the current run diameter and last run's diameter
+        # Should be as little as possible because we need consistency for days 0 through 3/4
+        # e.g. 100, 101, 99, 100, 102 is ok; 100, 120, 94, 111 is not
+        # times -1 will invert minmax scaling to maxmin, closer to 0 is better
+        pairwise_total_sum = -1 * np.sum(pairwise_abs_diff)
+        # This records distance between current and first distance in the list
+        # That way, if we have consistency but we are consistently very far from the initial diameter
+        # Then something went wrong, so we should penalize the result
+        # 100, 130, 131, 129, 125 is not ok
+        current_to_first_total_sum = -1 * np.sum(current_to_first_abs_diff)
+
+        print(f"PAIRWISE TOTAL SUM (closer to 0 is better): {pairwise_total_sum}")
+        print(f"CURRENT TO FIRST TOTAL SUM (closer to 0 is better): {current_to_first_total_sum}")
+
+        pairwise_total_sum_list.append(pairwise_total_sum)
+        current_to_first_total_sum_list.append(current_to_first_total_sum)
+
+        options.append(
+            {
+                'pairwise_total_sum': pairwise_total_sum,
+                'current_to_first_total_sum': current_to_first_total_sum,
+                'params': params
+            }
+        )
+
+    numpy_array_for_minmax_analysis = np.column_stack((pairwise_total_sum_list, current_to_first_total_sum_list))
+
+    scaler = MinMaxScaler()
+
+    # apply MinMaxScaler to each column
+    scaled_data = scaler.fit_transform(numpy_array_for_minmax_analysis)  # Scale each column to [0, 1]
+    # multiply by 100 to spread out results even more
+    scaled_data_100 = scaled_data * 100
+
+    # sum the results for each row
+    # it's essentially like a leaderboard (places decided by sum of the two features per each row)
+    # this way we can take both results into account
+    # e.g.:
+    # f1 f2
+    # 100 25 -> 125 (2nd place)
+    # 50 60 -> 110 (3rd place)
+    # 70 80 -> 150 (1st place)
+    row_sums = scaled_data_100.sum(axis=1)
+
+    for i, row in enumerate(row_sums):
+        options[i]['final_score'] = row
+
+    sorted_options = sorted(options, key=lambda x: x['final_score'], reverse=True)
+
+    print(f"TOP 3 BEST CHOICES:\n"
+          f"SCORE: {sorted_options[0]['final_score']}\nPARAMS: {sorted_options[0]['params']}\n"
+          f"SCORE: {sorted_options[1]['final_score']}\nPARAMS: {sorted_options[1]['params']}\n"
+          f"SCORE: {sorted_options[2]['final_score']}\nPARAMS: {sorted_options[2]['params']}\n")
+
+
 
 if __name__ == "__main__":
     main()
