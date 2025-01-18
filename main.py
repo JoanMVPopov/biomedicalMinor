@@ -707,7 +707,8 @@ def analyze_run(jpg_filenames, params):
         # plotter.show_grid()
         # plotter.show()
     except Exception as e:
-        print("Mesh could not be created due to an error, likely related to the given iso value (128). Nevertheless, mesh volume will be set to 0. Moving on...")
+        with open("output.txt", "a") as file:
+            file.write("Mesh could not be created due to an error, likely related to the given iso value (128). Nevertheless, mesh volume will be set to 0. Moving on...\n")
     finally:
         # 6) Compute volume from the *resampled* binary array
         voxel_count = np.count_nonzero(volume_resampled)
@@ -754,10 +755,11 @@ def do_runs(runs_range, folder_names, current_file_directory, params):
             continue
 
         current_run_volume_numpy, current_run_volume_mesh, current_run_sphere_volume_estimate, diameter = analyze_run(run_file_names, params)
-        print(f"RUN: {run+1}, NUMPY VOLUME: {current_run_volume_numpy} 10^4 µm")
-        print(f"RUN: {run + 1}, MESH VOLUME: {current_run_volume_mesh} 10^4 µm")
-        print(f"RUN: {run + 1}, SPHERE VOLUME: {current_run_sphere_volume_estimate} 10^4 µm")
-        print(f"RUN: {run + 1}, DIAMETER: {diameter}")
+        with open("output.txt", "a") as file:
+            file.write(f"RUN: {run+1}, NUMPY VOLUME: {current_run_volume_numpy} 10^4 µm\n")
+            file.write(f"RUN: {run + 1}, MESH VOLUME: {current_run_volume_mesh} 10^4 µm\n")
+            file.write(f"RUN: {run + 1}, SPHERE VOLUME: {current_run_sphere_volume_estimate} 10^4 µm\n")
+            file.write(f"RUN: {run + 1}, DIAMETER: {diameter}\n")
 
         if len(diameter_list) > 0:
             diameter_penalty = 0
@@ -801,7 +803,7 @@ def do_runs(runs_range, folder_names, current_file_directory, params):
     plt.grid(True)  # Add a grid to the background
     plt.legend(loc="upper right")  # Add a legend in the top-right corner
 
-    plt.savefig(f"volume_progression_lks_{params['laplacian_k_size']}_lt_{params['laplacian_threshold']}_dks_{params['dilation_kernel_size']}_di_{params['dilation_iterations']}.png")
+    plt.savefig(f"output-images/volume_progression_lks_{params['laplacian_k_size']}_lt_{params['laplacian_threshold']}_dks_{params['dilation_kernel_size']}_di_{params['dilation_iterations']}.png")
     plt.close()
 
     return pairwise_abs_diff, current_to_first_abs_diff, diameter_list
@@ -829,18 +831,18 @@ def main():
     ######################################
     ## USE THIS FOR ALL POSSIBLE COMBINATIONS
 
-    # parameters = get_parameter_options()
-    #
-    # grid = ParameterGrid(parameters)
+    parameters = get_parameter_options()
+
+    grid = ParameterGrid(parameters)
 
     ###################################
 
-    grid = [
-        {'dilation_iterations': 1, 'dilation_kernel_size': (2, 2), 'laplacian_k_size': 5, 'laplacian_threshold': 40},
-        {'dilation_iterations': 1, 'dilation_kernel_size': (2, 2), 'laplacian_k_size': 7, 'laplacian_threshold': 40},
-        {'dilation_iterations': 2, 'dilation_kernel_size': (4, 4), 'laplacian_k_size': 7, 'laplacian_threshold': 60},
-        {'dilation_iterations': 1, 'dilation_kernel_size': (5, 5), 'laplacian_k_size': 7, 'laplacian_threshold': 60}
-    ]
+    # grid = [
+    #     {'dilation_iterations': 1, 'dilation_kernel_size': (2, 2), 'laplacian_k_size': 5, 'laplacian_threshold': 40},
+    #     {'dilation_iterations': 1, 'dilation_kernel_size': (2, 2), 'laplacian_k_size': 7, 'laplacian_threshold': 40},
+    #     {'dilation_iterations': 2, 'dilation_kernel_size': (4, 4), 'laplacian_k_size': 7, 'laplacian_threshold': 60},
+    #     {'dilation_iterations': 1, 'dilation_kernel_size': (5, 5), 'laplacian_k_size': 7, 'laplacian_threshold': 60}
+    # ]
 
     options = []
     pairwise_total_sum_list = []
@@ -848,37 +850,42 @@ def main():
 
     # Iterate through all possible combinations (or hardcoded ones)
     for params in grid:
+        try:
+            with open("output.txt", "a") as file:   
+                file.write("------------------------\n")
+                file.write(f"CURRENT PARAMS: {params}\n")
 
-        print("------------------------")
-        print(f"CURRENT PARAMS: {params}")
+            pairwise_abs_diff, current_to_first_abs_diff, _ = do_runs(runs, folder_names,
+                                                                current_file_directory, params)
 
-        pairwise_abs_diff, current_to_first_abs_diff, _ = do_runs(runs, folder_names,
-                                                              current_file_directory, params)
+            # First one records distance between the current run diameter and last run's diameter
+            # Should be as little as possible because we need consistency for days 0 through 3/4
+            # e.g. 100, 101, 99, 100, 102 is ok; 100, 120, 94, 111 is not
+            # times -1 will invert minmax scaling to maxmin, closer to 0 is better
+            pairwise_total_sum = -1 * np.sum(pairwise_abs_diff)
+            # This records distance between current and first distance in the list
+            # That way, if we have consistency but we are consistently very far from the initial diameter
+            # Then something went wrong, so we should penalize the result
+            # 100, 130, 131, 129, 125 is not ok
+            current_to_first_total_sum = -1 * np.sum(current_to_first_abs_diff)
 
-        # First one records distance between the current run diameter and last run's diameter
-        # Should be as little as possible because we need consistency for days 0 through 3/4
-        # e.g. 100, 101, 99, 100, 102 is ok; 100, 120, 94, 111 is not
-        # times -1 will invert minmax scaling to maxmin, closer to 0 is better
-        pairwise_total_sum = -1 * np.sum(pairwise_abs_diff)
-        # This records distance between current and first distance in the list
-        # That way, if we have consistency but we are consistently very far from the initial diameter
-        # Then something went wrong, so we should penalize the result
-        # 100, 130, 131, 129, 125 is not ok
-        current_to_first_total_sum = -1 * np.sum(current_to_first_abs_diff)
+            with open("output.txt", "a") as file:
+                file.write(f"PAIRWISE TOTAL SUM (closer to 0 is better): {pairwise_total_sum}\n")
+                file.write(f"CURRENT TO FIRST TOTAL SUM (closer to 0 is better): {current_to_first_total_sum}\n")
 
-        print(f"PAIRWISE TOTAL SUM (closer to 0 is better): {pairwise_total_sum}")
-        print(f"CURRENT TO FIRST TOTAL SUM (closer to 0 is better): {current_to_first_total_sum}")
+            pairwise_total_sum_list.append(pairwise_total_sum)
+            current_to_first_total_sum_list.append(current_to_first_total_sum)
 
-        pairwise_total_sum_list.append(pairwise_total_sum)
-        current_to_first_total_sum_list.append(current_to_first_total_sum)
-
-        options.append(
-            {
-                'pairwise_total_sum': pairwise_total_sum,
-                'current_to_first_total_sum': current_to_first_total_sum,
-                'params': params
-            }
-        )
+            options.append(
+                {
+                    'pairwise_total_sum': pairwise_total_sum,
+                    'current_to_first_total_sum': current_to_first_total_sum,
+                    'params': params
+                }
+            )
+        except Exception as e:
+            with open("output.txt", "a") as file:
+                file.write(f"ERROR processing params {params}: {str(e)}\n")
 
     numpy_array_for_minmax_analysis = np.column_stack((pairwise_total_sum_list, current_to_first_total_sum_list))
 
@@ -904,10 +911,11 @@ def main():
 
     sorted_options = sorted(options, key=lambda x: x['final_score'], reverse=True)
 
-    print(f"TOP 3 BEST CHOICES:\n"
-          f"SCORE: {sorted_options[0]['final_score']}\nPARAMS: {sorted_options[0]['params']}\n"
-          f"SCORE: {sorted_options[1]['final_score']}\nPARAMS: {sorted_options[1]['params']}\n"
-          f"SCORE: {sorted_options[2]['final_score']}\nPARAMS: {sorted_options[2]['params']}\n")
+    with open("output.txt", "a") as file:
+        file.write(f"TOP 3 BEST CHOICES:\n"
+            f"SCORE: {sorted_options[0]['final_score']}\nPARAMS: {sorted_options[0]['params']}\n"
+            f"SCORE: {sorted_options[1]['final_score']}\nPARAMS: {sorted_options[1]['params']}\n"
+            f"SCORE: {sorted_options[2]['final_score']}\nPARAMS: {sorted_options[2]['params']}\n")
 
 
 
