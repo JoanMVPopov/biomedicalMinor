@@ -149,6 +149,45 @@ def visualize_diameters(image, contour, area_ratio, avg_distance_to_enclosing):
     cv2.putText(vis_image, f'Min enclosing: {min_diameter:.1f}',
                 (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
 
+    # # Draw distances to enclosing circle
+    # contour_points = contour.reshape(-1, 2)
+    # distances_to_center = np.sqrt(
+    #     (contour_points[:, 0] - min_center[0]) ** 2 +
+    #     (contour_points[:, 1] - min_center[1]) ** 2
+    # )
+    # distances_to_perimeter = min_radius - distances_to_center
+
+    # This visualizes the 10 longest distances between the contour and the enclosing circle
+
+    # # Sort distances and get indices of top 10 distances
+    # top_indices = np.argsort(distances_to_perimeter)[-10:]
+    #
+    # # Draw lines for top 10 distances
+    # for idx in top_indices:
+    #     point = contour_points[idx]
+    #     distance = distances_to_perimeter[idx]
+    #
+    #     # Calculate point on circle perimeter
+    #     dx = point[0] - min_center[0]
+    #     dy = point[1] - min_center[1]
+    #     angle = np.arctan2(dy, dx)
+    #     circle_x = min_center[0] + min_radius * np.cos(angle)
+    #     circle_y = min_center[1] + min_radius * np.sin(angle)
+    #
+    #     # Draw line with color based on distance
+    #     max_dist = np.max(distances_to_perimeter)
+    #     color_ratio = distance / max_dist
+    #     color = (int(255 * color_ratio), int(255 * (1 - color_ratio)), 0)
+    #
+    #     start = (int(point[0]), int(point[1]))
+    #     end = (int(circle_x), int(circle_y))
+    #     cv2.line(vis_image, start, end, color, 2)
+    #
+    #     # Optionally add distance text near the line
+    #     mid_point = ((start[0] + end[0]) // 2, (start[1] + end[1]) // 2)
+    #     cv2.putText(vis_image, f'{distance:.1f}',
+    #                 mid_point, cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
+
     # Add area ratio text
     cv2.putText(vis_image, f'Area ratio: {area_ratio:.1f}%',
                 (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
@@ -238,11 +277,11 @@ def calc_contour_to_circle_perimeter_distance(contour, center_x, center_y, radiu
     # the radius and the distance to center
     distances_to_perimeter = radius - distances_to_center
 
-    # Sort distances in descending order and select the top 10
-    top_distances = np.sort(distances_to_perimeter)[-10:][::-1]
+    # # Sort distances in descending order and select the top 10
+    # top_distances = np.sort(distances_to_perimeter)[-10:][::-1]
 
     # Calculate average distance
-    avg_distance = np.mean(top_distances)
+    avg_distance = np.mean(distances_to_perimeter)
 
     return avg_distance
 
@@ -361,9 +400,9 @@ def load_images_from_directory(jpg_filenames, params):
                 #     diameter = results['feret_diameter']
                 ######################################################
 
-                # # Display annotated image
-                # cv2.imshow(f"Diameter measurements - Slice {i}", results['annotated_image'])
-                # cv2.waitKey(0)
+                # Display annotated image
+                cv2.imshow(f"Diameter measurements - Slice {i}", results['annotated_image'])
+                cv2.waitKey(0)
 
             ##############################################################
 
@@ -399,16 +438,16 @@ def load_images_from_directory(jpg_filenames, params):
         # cv2.imshow("Thresh", thresh)
         # cv2.imshow("Original Image", image)
 
-        # image_name = j.split("all_data_first")[-1]
-        #
-        # cv2.imshow(f"Focus Mask {image_name}", closed)
-        # cv2.imshow(f"In-Focus Regions {image_name}", in_focus_only)
-        # cv2.imshow(f"OUTLINE {image_name}", outline_image)
-        #
-        # # cv2.imshow("Blurred result", final)
-        # cv2.imshow(f"GRAY {image_name}", gray)
-        # cv2.waitKey(0)
-        # cv2.destroyAllWindows()
+        image_name = j.split("all_data_first")[-1]
+
+        cv2.imshow(f"Focus Mask {image_name}", closed)
+        cv2.imshow(f"In-Focus Regions {image_name}", in_focus_only)
+        cv2.imshow(f"OUTLINE {image_name}", outline_image)
+
+        # cv2.imshow("Blurred result", final)
+        cv2.imshow(f"GRAY {image_name}", gray)
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
 
 
     # Stack along a new z-axis => shape: (num_slices, height, width)
@@ -692,21 +731,21 @@ def analyze_run(jpg_filenames, params):
         # ONLY RUN WITH A SMALL SUBSET of runs selected
         ###############
 
-        # # 7) Visualize in PyVista
-        # plotter = pv.Plotter()
-        # plotter.add_mesh(mesh, color='blue', opacity=1, show_edges=True)
-        #
-        # # Create the sphere mesh
-        # radius = diameter / 2
-        # sphere = pv.Sphere(radius=radius, center=(0, 0, 0))
-        #
-        # # Add the sphere to the plot
-        # plotter.add_mesh(sphere, color='red', show_edges=True)
-        #
-        # plotter.add_axes()
-        # plotter.show_grid()
-        # plotter.show()
-    except Exception as e:
+    #     # 7) Visualize in PyVista
+    #     plotter = pv.Plotter()
+    #     plotter.add_mesh(mesh, color='blue', opacity=1, show_edges=True)
+    #
+    #     # Create the sphere mesh
+    #     radius = diameter / 2
+    #     sphere = pv.Sphere(radius=radius, center=(0, 0, 0))
+    #
+    #     # Add the sphere to the plot
+    #     plotter.add_mesh(sphere, color='red', show_edges=True)
+    #
+    #     plotter.add_axes()
+    #     plotter.show_grid()
+    #     plotter.show()
+    # except Exception as e:
         print("Mesh could not be created due to an error, likely related to the given iso value (128). Nevertheless, mesh volume will be set to 0. Moving on...")
     finally:
         # 6) Compute volume from the *resampled* binary array
