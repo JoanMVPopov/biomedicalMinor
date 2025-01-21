@@ -1,21 +1,11 @@
 import os
-import re
 import numpy as np
-import SimpleITK as sitk
 import cv2
-
 import matplotlib.pyplot as plt
-import vtk
-from scipy import ndimage
+import pyvista as pv
+
 from scipy.spatial.distance import pdist, squareform
-
 from skimage import measure
-from skimage._shared.filters import gaussian
-from skimage.filters import threshold_otsu
-
-import pyvista as pv  # pip install pyvista
-from skimage.morphology import binary_closing, ball
-
 from sklearn.model_selection import ParameterGrid
 from sklearn.preprocessing import MinMaxScaler
 
@@ -29,9 +19,9 @@ def get_parameter_options():
     }
     # return {
     #     'laplacian_k_size': [1, 3],
-    #     'laplacian_threshold': [40, 50],
+    #     'laplacian_threshold': [40],
     #     'dilation_kernel_size': [(1, 1), (2, 2)],
-    #     'dilation_iterations': [1, 2]
+    #     'dilation_iterations': [1]
     # }
 
 
@@ -138,7 +128,7 @@ def visualize_diameters(image, contour, area_ratio, avg_distance_to_enclosing):
     equiv_diameter, center = get_equivalent_diameter(contour)
     if center is not None:
         radius = int(equiv_diameter / 2)
-        cv2.circle(vis_image, center, radius, (0, 0, 255), 2)
+        # cv2.circle(vis_image, center, radius, (0, 0, 255), 2)
         cv2.putText(vis_image, f'Equivalent: {equiv_diameter:.1f}',
                     (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
@@ -153,14 +143,13 @@ def visualize_diameters(image, contour, area_ratio, avg_distance_to_enclosing):
     cv2.putText(vis_image, f'Area ratio: {area_ratio:.1f}%',
                 (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
-    # Add area ratio text
+    # Add average distance to enclosing text
     cv2.putText(vis_image, f'Avg distance to enclosing: {avg_distance_to_enclosing:.1f}',
                 (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
     return vis_image
 
 
-# Example usage in your existing code:
 def analyze_contour_in_image(image):
     """
     Analyzes contour diameters in an image.
@@ -232,8 +221,6 @@ def calc_contour_to_circle_perimeter_distance(contour, center_x, center_y, radiu
         (contour_points[:, 1] - center_y) ** 2
     )
 
-    # TODO: Figure out how to improve
-
     # The distance to circle perimeter is the difference between
     # the radius and the distance to center
     distances_to_perimeter = radius - distances_to_center
@@ -248,32 +235,26 @@ def calc_contour_to_circle_perimeter_distance(contour, center_x, center_y, radiu
 
 
 
-def load_images_from_directory(jpg_filenames, params):
+def load_images_from_directory(jpg_filenames, params, show_focus_contours = False):
     """
     Load JPG images from a 'files' subdirectory, convert each to grayscale,
     and stack them into a 3D numpy volume (shape: [Z, Y, X]).
     """
     # List to hold each processed 2D slice
     slices_3d = []
-
-    # first few images usually don't have cytoplasm in focus
-    # maybe we can skip them??
-    #for i, j in enumerate(jpg_filenames[4:len(jpg_filenames)]):
+    color_data = []
 
     diameter = 0.0
     adte_min = np.inf
 
+    diameter_options = []
+    adte_list = []
+    ratio_list = []
+
     for i, j in enumerate(jpg_filenames):
         image = cv2.imread(j)
-        # gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-
-        # final = blur_region_outside_of_radius(image)
-        # final = color_region_outside_of_radius(image)
-
 
         final = gradual_color_region_outside_radius(image)
-
-        #final = image
 
         gray = cv2.cvtColor(final, cv2.COLOR_BGR2GRAY)
 
@@ -309,27 +290,24 @@ def load_images_from_directory(jpg_filenames, params):
         # Create an empty image for the outline
         outline_image = np.zeros_like(gray)
 
-
         # Draw only the largest contour
         # Draw and fill contours
         if contours:
-            #largest_contour = max(contours, key=cv2.contourArea)
-
             # Close first and last contour, needed for proper 3d mesh
-            if i == 0 or i == len(jpg_filenames) - 1:
-                cv2.drawContours(outline_image, contours, -1, 128, -1)  # -1 thickness means fill
+            # if i == 0 or i == len(jpg_filenames) - 1:
+            #     cv2.drawContours(outline_image, contours, -1, 128, -1)  # -1 thickness means fill
 
-            else:
-                # First fill the inside area with white (255)
-                cv2.drawContours(outline_image, contours, -1, 255, -1)  # -1 thickness means fill
+            # else:
+            # First fill the inside area with white (255)
+            cv2.drawContours(outline_image, contours, -1, 255, -1)  # -1 thickness means fill
 
-                # Create a copy of the filled contour
-                contour_only = np.zeros_like(gray)
-                # Draw the contour line itself in gray (128)
-                cv2.drawContours(contour_only, contours, -1, 128, 2)
+            # Create a copy of the filled contour
+            contour_only = np.zeros_like(gray)
+            # Draw the contour line itself in gray (128)
+            cv2.drawContours(contour_only, contours, -1, 128, 2)
 
-                # Combine: where contour is drawn (128), use that value; otherwise keep the fill values
-                outline_image = np.where(contour_only == 128, 128, outline_image)
+            # Combine: where contour is drawn (128), use that value; otherwise keep the fill values
+            outline_image = np.where(contour_only == 128, 128, outline_image)
 
             ############################################################
             ## DIAMETER APPROXIMATION
@@ -338,83 +316,70 @@ def load_images_from_directory(jpg_filenames, params):
             # Get diameter measurements
             results = analyze_contour_in_image(outline_image)
 
-            # print(results)
-
             if results:
-                # print(f"Slice {i} measurements:")
-                # print(f"Feret diameter: {results['feret_diameter']:.2f}")
-                # print(f"Equivalent diameter: {results['equivalent_diameter']:.2f}")
-                # print(f"Minimum enclosing diameter: {results['minimum_enclosing_diameter']:.2f}")
-
-
-                #####################################################
-                # TODO: Figure out how to improve
-
                 # Take F-15, F0, F15, F30 into consideration for embryo diameter
                 if i >= 4 and i <= 7:
-                    if results['avg_distance_to_enclosing'] < adte_min:
-                        diameter = results['feret_diameter']
 
+                    adte_list.append((-1) * results['avg_distance_to_enclosing'])
+                    ratio_list.append(results['area_ratio'])
 
-                # I used this by default until I replaced it with the code above
-                # if i == 5:
-                #     diameter = results['feret_diameter']
-                ######################################################
+                    diameter_options.append(
+                        {
+                            "adte": (-1) * results['avg_distance_to_enclosing'],
+                            "ratio": results['area_ratio'],
+                            "eq": results['equivalent_diameter']
+                        }
+                    )
 
-                # # Display annotated image
-                # cv2.imshow(f"Diameter measurements - Slice {i}", results['annotated_image'])
-                # cv2.waitKey(0)
-
-            ##############################################################
-
-        # morphological operations to clean up noise
-        # kernel = np.ones((2, 2), np.uint8)
-        # focus_mask_clean = cv2.morphologyEx(focus_mask, cv2.MORPH_OPEN, kernel, iterations=1)
-        # focus_mask_clean = cv2.morphologyEx(focus_mask_clean, cv2.MORPH_CLOSE, kernel, iterations=5)
+                # Display annotated image
+                if show_focus_contours:
+                    cv2.imshow(f"Diameter measurements - Slice {i}", results['annotated_image'])
+                    cv2.waitKey(0)
 
         # 6. Create output (isolate in-focus regions)
-        focus_mask_3d = cv2.merge([closed, closed, closed])
-        in_focus_only = cv2.bitwise_and(final, focus_mask_3d)
+        # focus_mask_3d = cv2.merge([closed, closed, closed])
+        # in_focus_only = cv2.bitwise_and(final, focus_mask_3d)
 
-        # Invert the binary mask
-        #focus_mask_clean_inverted = cv2.bitwise_not(focus_mask_clean)
+        focus_mask_3d = cv2.merge([outline_image, outline_image, outline_image])
+        in_focus_only = cv2.bitwise_and(image, focus_mask_3d)
 
-
-
-        # Append to list (as a 2D array)
-        # slices_3d.append(focus_mask_clean)
-        # slices_3d.append(gray)
         slices_3d.append(outline_image)
+        color_data.append(in_focus_only)
 
+        if show_focus_contours:
+            image_name = j.split("all_data_first")[-1]
 
+            cv2.imshow(f"Original Image {image_name}", image)
+            cv2.imshow(f"Focus Mask {image_name}", closed)
+            cv2.imshow(f"In-Focus Regions {image_name}", in_focus_only)
+            cv2.imshow(f"Outline {image_name}", outline_image)
 
-        ###############################
-        # VISUALIZATION
-        # purely experimental,
-        # only run this with A SMALL SUBSET
-        # of runs
-        ##############################
+            # cv2.imshow("Blurred result", final)
+            cv2.imshow(f"Gray {image_name}", gray)
+            cv2.waitKey(0)
+            cv2.destroyAllWindows()
 
-        # #Show results
-        # cv2.imshow("Thresh", thresh)
-        # cv2.imshow("Original Image", image)
+    numpy_array_for_minmax_analysis = np.column_stack((adte_list, ratio_list))
 
-        # image_name = j.split("all_data_first")[-1]
-        #
-        # cv2.imshow(f"Focus Mask {image_name}", closed)
-        # cv2.imshow(f"In-Focus Regions {image_name}", in_focus_only)
-        # cv2.imshow(f"OUTLINE {image_name}", outline_image)
-        #
-        # # cv2.imshow("Blurred result", final)
-        # cv2.imshow(f"GRAY {image_name}", gray)
-        # cv2.waitKey(0)
-        # cv2.destroyAllWindows()
+    scaler = MinMaxScaler()
 
+    # apply MinMaxScaler to each column
+    scaled_data = scaler.fit_transform(numpy_array_for_minmax_analysis)  # Scale each column to [0, 1]
+
+    row_sums = scaled_data.sum(axis=1)
+
+    for i, row in enumerate(row_sums):
+        diameter_options[i]['final_score'] = row
+
+    sorted_options = sorted(diameter_options, key=lambda x: x['final_score'], reverse=True)
+
+    diameter = sorted_options[0]['eq']
 
     # Stack along a new z-axis => shape: (num_slices, height, width)
     volume = np.stack(slices_3d, axis=0)
+    color_volume = np.stack(color_data, axis=0)
 
-    return volume, diameter
+    return volume, color_volume, diameter
 
 
 def gradual_color_region_outside_radius(image):
@@ -461,93 +426,6 @@ def gradual_color_region_outside_radius(image):
 
     return final
 
-def color_region_outside_of_radius(image):
-    # 1) Determine the center and radius
-    h, w = image.shape[:2]
-    center_x, center_y = w // 2, h // 2
-    radius = max(center_x, center_y)  # for safety margin
-
-    # 2) Build a distance map from the center (Euclidean distance)
-    y_indices, x_indices = np.indices((h, w))
-    dist_map = np.sqrt((x_indices - center_x) ** 2 + (y_indices - center_y) ** 2)
-
-    # 3) Create a mask where:
-    #    True (1) = pixels to make black
-    #    False (0) = pixels to keep original
-    mask = dist_map / radius >= 1  # Everything at or beyond radius distance becomes black
-
-    # 2) Calculate the average color of the image
-    if len(image.shape) == 3 and image.shape[2] == 3:
-        # For color images - calculate mean for each channel
-        avg_color = np.mean(image, axis=(0, 1))
-    else:
-        # For grayscale images
-        avg_color = np.mean(image)
-
-    # If the image is color, handle 3 channels
-    if len(image.shape) == 3 and image.shape[2] == 3:
-        # Make a copy to avoid modifying original
-        result = image.copy()
-        # Set pixels where mask is True to black ([0,0,0])
-        #result[mask] = [0, 0, 0]
-        result[mask] = avg_color
-
-        return result
-    else:
-        # For grayscale images
-        result = image.copy()
-        # Set pixels where mask is True to black (0)
-        #result[mask] = 0
-        result[mask] = avg_color
-
-        return result
-
-def blur_region_outside_of_radius(image):
-    # 1) Determine the center and radius
-    h, w = image.shape[:2]
-    center_x, center_y = w // 2, h // 2
-    radius = max(center_x, center_y)  # for safety margin
-
-    # 2) Create a blurred version
-    #    - The kernel size and sigma (20) can be tuned
-    blurred = cv2.GaussianBlur(image, (7, 7), 50)
-
-    # 3) Build a distance map from the center (Euclidean distance)
-    #    dist_map[y, x] = distance of pixel (x, y) from center
-    y_indices, x_indices = np.indices((h, w))
-    dist_map = np.sqrt((x_indices - center_x) ** 2 + (y_indices - center_y) ** 2)
-
-    # 4) Normalize the distance to [0, 1] where
-    #    dist = 0 => center => alpha=0 => 0% blurred, 100% original
-    #    dist >= radius => edges => alpha=1 => 100% blurred
-    alpha = dist_map / radius
-    alpha = np.clip(alpha, 0, 1)  # Ensure we don't exceed [0,1]
-
-    # If the image is color, we need 3 channels of alpha.
-    # If the image is grayscale, you can skip this expansion.
-    if len(image.shape) == 3 and image.shape[2] == 3:
-        alpha_3d = cv2.merge([alpha, alpha, alpha])
-        # Blend: final = alpha * blurred + (1 - alpha)* original
-        # Make sure everything is float to avoid clip/round errors
-        blurred_float = blurred.astype(np.float32)
-        image_float = image.astype(np.float32)
-        final_float = alpha_3d * blurred_float + (1 - alpha_3d) * image_float
-
-        # Convert back to uint8
-        final = final_float.astype(np.uint8)
-
-        return final
-
-    else:
-        # For grayscale images
-        blurred_float = blurred.astype(np.float32)
-        image_float = image.astype(np.float32)
-        final_float = alpha * blurred_float + (1 - alpha) * image_float
-        final = final_float.astype(np.uint8)
-
-        return final
-
-
 def create_mesh(volume, threshold, spacing):
     """
     Extract a surface mesh from the 3D volume using marching cubes.
@@ -560,170 +438,168 @@ def create_mesh(volume, threshold, spacing):
     )
     return verts, faces, normals, values
 
-def interpolate_slices(volume, num_intermediate_slices):
+
+def create_colored_mesh(volume, color_volume, threshold, spacing):
     """
-    Interpolates between adjacent slices of a 3D volume.
-
-    Parameters:
-    - volume (np.ndarray): The input 3D volume (Z, Y, X).
-    - num_intermediate_slices (int): The number of intermediate slices to add between each pair of slices.
-
-    Returns:
-    - interpolated_volume (np.ndarray): The interpolated 3D volume.
+    Extract a surface mesh from the 3D volume and apply colors from the color volume.
     """
-    z, y, x = volume.shape
-    new_volume = []
+    # Extract surface using marching cubes
+    verts, faces, normals, values = measure.marching_cubes(
+        volume,
+        level=threshold,
+        spacing=spacing
+    )
 
-    for i in range(z - 1):
-        # Add the current slice
-        new_volume.append(volume[i])
+    # For each vertex, get the color from the color volume
+    colors = []
+    for vert in verts:
+        # Convert vertex coordinates to indices in the color volume
+        z, y, x = np.round(vert / spacing).astype(int)
+        # Ensure indices are within bounds
+        z = np.clip(z, 0, color_volume.shape[0] - 1)
+        y = np.clip(y, 0, color_volume.shape[1] - 1)
+        x = np.clip(x, 0, color_volume.shape[2] - 1)
+        # Get color at this position and normalize to 0-1 range
+        color = color_volume[z, y, x] / 255.0
+        colors.append(color)
 
-        # Linearly interpolate intermediate slices
-        for j in range(1, num_intermediate_slices + 1):
-            alpha = j / (num_intermediate_slices + 1)  # Interpolation factor
-            #print(alpha)
-            interpolated_slice = (1 - alpha) * volume[i] + alpha * volume[i + 1]
-            #interpolated_slice = np.where(interpolated_slice < 255/2, 0.0, 255.0)
-            #print(np.unique(interpolated_slice))
-            new_volume.append(interpolated_slice)
+    return verts, faces, normals, np.array(colors)
 
-    # Add the last slice
-    new_volume.append(volume[-1])
-
-    return np.stack(new_volume, axis=0)
-
-# Visualization Function
-def visualize_slices(original_volume, interpolated_volume, num_intermediate_slices, slice_idx):
-    """
-    Visualizes a specific slice from the original and interpolated volumes.
-
-    Parameters:
-    - original_volume (np.ndarray): The original 3D volume.
-    - interpolated_volume (np.ndarray): The interpolated 3D volume.
-    - slice_idx (int): Index of the original slice to visualize.
-    """
-
-    current_idx = slice_idx
-    end_idx = slice_idx + (num_intermediate_slices + 1)*2
-
-    while True:
-        # Display the current slice
-        slice_to_show = interpolated_volume[current_idx].astype(np.uint8)
-        cv2.imshow(f"Slice {current_idx}", slice_to_show)
-
-        # Wait for user input
-        key = cv2.waitKey(0)
-
-        if key == ord('q'):  # Quit on 'q'
-            break
-        elif key == ord('n') and current_idx + 1 <= end_idx:  # Next slice on 'n'
-            cv2.destroyWindow(f"Slice {current_idx}")
-            current_idx += 1
-        elif key == ord('p') and current_idx > slice_idx:  # Previous slice on 'p'
-            cv2.destroyWindow(f"Slice {current_idx}")
-            current_idx -= 1
-
-    # Clean up
-    cv2.destroyAllWindows()
-
-    #Plot the interpolated slice
-    # plt.subplot(1, 2, 2)
-    # plt.imshow(interpolated_volume[interpolated_idx], cmap='gray')
-    # plt.title(f"Interpolated Slice {interpolated_idx}")
-    # plt.axis('off')
-    #
-    # plt.tight_layout()
-    # plt.show()
-
-
-def analyze_run(jpg_filenames, params):
+def analyze_run(jpg_filenames, params, show_3d_model = False, show_focus_contours = False):
     # 1) Load the processed 3D volume (in-focus only)
-    volume_resampled, diameter = load_images_from_directory(jpg_filenames, params)
-
-    # Interpolation parameters
-    #num_intermediate_slices = 1  # Number of intermediate slices between each pair of original slices
-
-    # Interpolate the volume
-    #interpolated_volume = interpolate_slices(volume_resampled, num_intermediate_slices)
-
-    #############
-    # SLICE VISUALIZATION
-    # This visualizes a few slices, purely experimental, feel free to change
-    # Only run this with a small subset
-    #############
-
-    #original_slice_idx = 0
-    #visualize_slices(volume_resampled, interpolated_volume,  num_intermediate_slices, original_slice_idx)
-
-    # # Check shapes
-    # print(f"Original volume shape: {volume_resampled.shape}")
-    # print(f"Interpolated volume shape: {interpolated_volume.shape}")
-
-    # Now 'volume_resampled' is your new 3D array with finer sampling along Z.
-    #volume_resampled = binary_closing(volume_resampled, ball(4))
-
-    # 3) Compute Otsu's threshold (already done in your code)
-
-    # Maybe unnecessary
-    thresh = threshold_otsu(volume_resampled.ravel())
+    volume_resampled, color_volume, diameter = load_images_from_directory(jpg_filenames, params, show_focus_contours)
 
     mesh_volume = 0
 
     try:
+        plotter = pv.Plotter()
 
-        # 4) Create mesh with marching_cubes
-        verts, faces, normals, values = create_mesh(volume_resampled, 128, spacing=(15.0, 1/3, 1/3))
+        # Store meshes for each layer
+        layer_meshes = []
 
-        # 5) Convert faces, create PyVista mesh, etc. (same as before)
-        faces_expanded = np.column_stack([np.full(len(faces), 3, dtype=np.int32), faces]).ravel()
-        mesh = pv.PolyData(verts, faces_expanded)
+        print("Creating separate meshes for each layer...")
 
-        # # Optional cleanup / smoothing
-        # mesh = mesh.smooth_taubin(n_iter=100)
-        # mesh = mesh.fill_holes(hole_size=1000)
+        # Create separate mesh for each layer
+        for z in range(volume_resampled.shape[0]):
+            # Create a mask for this layer
+            layer_mask = np.zeros_like(volume_resampled)
+            layer_mask[z] = volume_resampled[z]
 
-        mesh_volume = mesh.volume
+            try:
+                # Create mesh for this layer
+                verts, faces, normals, colors = create_colored_mesh(
+                    layer_mask,
+                    color_volume[z:z + 1],  # Take corresponding color slice
+                    128,
+                    spacing=(15.0, 1/3, -1/3)
+                )
 
-        #################
-        ## VISUALIZATION
-        # This creates a very cool looking 3d plot
-        # Hopefully, you should see the outline of the embryo
-        # However, a lot of holes are present so it looks kinda off...
-        # ONLY RUN WITH A SMALL SUBSET of runs selected
-        ###############
+                # Create PyVista mesh for this layer
+                faces_expanded = np.column_stack([np.full(len(faces), 3, dtype=np.int32), faces]).ravel()
+                mesh = pv.PolyData(verts, faces_expanded)
+                mesh.point_data['colors'] = colors[:, :3]
 
-        # # 7) Visualize in PyVista
-        # plotter = pv.Plotter()
-        # plotter.add_mesh(mesh, color='blue', opacity=1, show_edges=True)
-        #
-        # # Create the sphere mesh
-        # radius = diameter / 2
-        # sphere = pv.Sphere(radius=radius, center=(0, 0, 0))
-        #
-        # # Add the sphere to the plot
-        # plotter.add_mesh(sphere, color='red', show_edges=True)
-        #
-        # plotter.add_axes()
-        # plotter.show_grid()
-        # plotter.show()
+                layer_meshes.append(mesh)
+
+            except Exception as e:
+                print(f"Error creating mesh for layer {z}: {str(e)}")
+                #layer_meshes.append(None)
+
+        # Initialize list to track visibility status
+        visibility_status = [True] * len(layer_meshes)
+
+        # Add all meshes initially
+        mesh_actors = []
+        for i, mesh in enumerate(layer_meshes):
+            if mesh is not None:
+                actor = plotter.add_mesh(
+                    mesh,
+                    scalars='colors',
+                    rgb=True,
+                    name=f'layer_{i}'
+                )
+                mesh_actors.append(actor)
+            else:
+                mesh_actors.append(None)
+
+        print("Calculating checkbox positions...")
+
+        # Calculate checkbox positions
+        n_layers = len(layer_meshes)
+        checkbox_height = 0.05  # Height of each checkbox
+        start_position = 0.95 - (n_layers * checkbox_height)  # Start from top with some margin
+
+        # Add checkboxes for each layer
+        for i in range(n_layers):
+            if layer_meshes[i] is not None:
+                try:
+                    plotter.add_checkbox_button_widget(
+                        lambda state, layer=i: callback(state, layer, visibility_status, mesh_actors, plotter),
+                        value=True,  # Initially checked
+                        position=(10, int(start_position * 800 + (i * checkbox_height * 800))),
+                        # Convert to pixel coordinates
+                        size=15,
+                        border_size=2,
+                        color_on='grey',
+                        color_off='white',
+                        background_color='black'
+                    )
+                except Exception as e:
+                    print(e)
+
+                # Add text label for each checkbox
+                plotter.add_text(
+                    f"Focal Plane {i}",
+                    position=(40, int(start_position * 800 + (i * checkbox_height * 800))),
+                    font_size=10,
+                    color='black'
+                )
+
+        # Add title
+        plotter.add_text(
+            "Toggle Focal Planes",
+            position=(10, 820),
+            font_size=12,
+            color='black'
+        )
+
+        plotter.add_axes()
+        plotter.show_grid()
+
+        print("Showing 3D model...")
+
+        # Show the interactive window
+        plotter.show()
+
+
     except Exception as e:
         with open("output.txt", "a") as file:
             file.write("Mesh could not be created due to an error, likely related to the given iso value (128). Nevertheless, mesh volume will be set to 0. Moving on...\n")
     finally:
-        # 6) Compute volume from the *resampled* binary array
-        voxel_count = np.count_nonzero(volume_resampled)
-        dx, dy, dz = (1 / 3, 1 / 3, 15.0)
-        voxel_volume = dx * dy * dz
-        volume_estimate = voxel_count * voxel_volume
-
         sphere_volume_estimate = (4 / 3) * np.pi * ((diameter / 2) ** 3)
 
-        return volume_estimate / (10 ** 4), mesh_volume / (10 ** 4), sphere_volume_estimate / (10 ** 4), diameter
+        return mesh_volume / (10 ** 4), sphere_volume_estimate / (10 ** 4), diameter
 
 
+def callback(state, layer_idx, visibility_status, mesh_actors, plotter):
+    visibility_status[layer_idx] = state
+    if mesh_actors[layer_idx] is not None:
+        mesh_actors[layer_idx].SetVisibility(state)
+    plotter.render()
 
-def do_runs(runs_range, folder_names, current_file_directory, params):
-    volume_estimates_numpy = []
+
+def average_every_n(data, n=10):
+    # Calculate how many complete groups of n we have
+    length = len(data)
+    groups = length // n
+    # Truncate the data to fit complete groups
+    truncated = data[:groups * n]
+    # Reshape and calculate mean
+    return np.mean(np.reshape(truncated, (-1, n)), axis=1)
+
+
+def do_runs(runs_range, folder_names, current_file_directory, params, do_plots=False,
+            show_3d_model=False, show_focus_contours=False):
     volume_estimates_pyvista_mesh = []
     volume_estimates_sphere = []
 
@@ -754,11 +630,19 @@ def do_runs(runs_range, folder_names, current_file_directory, params):
             gitkeep_index = run
             continue
 
-        current_run_volume_numpy, current_run_volume_mesh, current_run_sphere_volume_estimate, diameter = analyze_run(run_file_names, params)
+        print(f"RUN: {run+1}")
+
+        # The current algorithm does not account for expansion (happens ~ at the start of day 5)
+        # Just in case, set dilation to a higher number to connect components
+        if run == 600:
+            print("Switching to expansion mode, dilation set to 6")
+            params['dilation_iterations'] = 6
+
+        current_run_volume_mesh, current_run_sphere_volume_estimate, diameter = analyze_run(run_file_names, params,
+                                                                                            show_3d_model, show_focus_contours)
         with open("output.txt", "a") as file:
-            file.write(f"RUN: {run+1}, NUMPY VOLUME: {current_run_volume_numpy} 10^4 µm\n")
-            file.write(f"RUN: {run + 1}, MESH VOLUME: {current_run_volume_mesh} 10^4 µm\n")
-            file.write(f"RUN: {run + 1}, SPHERE VOLUME: {current_run_sphere_volume_estimate} 10^4 µm\n")
+            # file.write(f"RUN: {run + 1}, MESH VOLUME: {current_run_volume_mesh} 10^4 µm\n")
+            # file.write(f"RUN: {run + 1}, SPHERE VOLUME: {current_run_sphere_volume_estimate} 10^4 µm\n")
             file.write(f"RUN: {run + 1}, DIAMETER: {diameter}\n")
 
         if len(diameter_list) > 0:
@@ -767,20 +651,14 @@ def do_runs(runs_range, folder_names, current_file_directory, params):
             current_to_first_abs_diff_to_append = (abs(diameter - diameter_list[0]))**2
 
             if diameter < 100:
-                #diameter_penalty = abs((diameter/100) - 1)
                 diameter_penalty = abs(diameter - 100)**3
             elif diameter > 150:
-                #diameter_penalty = abs((diameter/150) - 1)
-                diameter_penalty = abs(diameter - 100)**3
-
-            # pairwise_abs_diff.append(pairwise_abs_diff_to_append + (diameter_penalty * pairwise_abs_diff_to_append)**2)
-            # current_to_first_abs_diff.append(current_to_first_abs_diff_to_append + (diameter_penalty * current_to_first_abs_diff_to_append)**2)
+                diameter_penalty = abs(diameter - 150)**3
 
             pairwise_abs_diff.append(pairwise_abs_diff_to_append + diameter_penalty)
             current_to_first_abs_diff.append(current_to_first_abs_diff_to_append + diameter_penalty)
 
         diameter_list.append(diameter)
-        volume_estimates_numpy.append(current_run_volume_numpy)
         volume_estimates_pyvista_mesh.append(current_run_volume_mesh)
         volume_estimates_sphere.append(current_run_sphere_volume_estimate)
 
@@ -788,61 +666,70 @@ def do_runs(runs_range, folder_names, current_file_directory, params):
     if gitkeep_index != -1:
         runs_list.pop(gitkeep_index)
 
-    # Create the plot
-    plt.figure(figsize=(10, 6))  # Set the figure size
-    plt.plot(runs_list, volume_estimates_numpy, label="NUMPY Volume progression")  # Plot the line
-    plt.plot(runs_list, volume_estimates_pyvista_mesh, label="PYVISTA MESH Volume progression")  # Plot the line
-    plt.plot(runs_list, volume_estimates_sphere, label="SPHERE Volume progression")  # Plot the line
+    if do_plots:
+        # Volume progression
+        progression_plots(runs_list, volume_estimates_sphere, "SPHERE Volume progression",
+                          "Runs", "Volume in 10^4 µm", "Volume progression",
+                          f"volume_progression_lks_{params['laplacian_k_size']}_lt_{params['laplacian_threshold']}_dks_{params['dilation_kernel_size']}_di_{params['dilation_iterations']}.png")
 
-    # Add labels and title
-    plt.xlabel("Runs")  # Label for X-axis
-    plt.ylabel("Volume in 10^4 µm")  # Label for Y-axis
-    plt.title("Volume progression")  # Title of the chart
+        # Calculate averages
+        averaged_pyvista = average_every_n(volume_estimates_pyvista_mesh, 5)
+        averaged_sphere = average_every_n(volume_estimates_sphere, 5)
 
-    # Add grid and legend
-    plt.grid(True)  # Add a grid to the background
-    plt.legend(loc="upper right")  # Add a legend in the top-right corner
+        # Create x-axis values (each point represents 5 runs)
+        averaged_runs = np.arange(len(averaged_sphere)) * 5
 
-    plt.savefig(f"output-images/volume_progression_lks_{params['laplacian_k_size']}_lt_{params['laplacian_threshold']}_dks_{params['dilation_kernel_size']}_di_{params['dilation_iterations']}.png")
-    plt.close()
+        # Volume 5-run average progression
+        progression_plots(averaged_runs, averaged_sphere, "SPHERE Volume progression",
+                          "Runs (averaged every 5)", "Volume in 10^4 µm", "Volume progression (5-run averages)",
+                          f"volume_progression_averaged_lks_{params['laplacian_k_size']}_lt_{params['laplacian_threshold']}_dks_{params['dilation_kernel_size']}_di_{params['dilation_iterations']}.png")
+
+        # Diameter progression
+        progression_plots(runs_list, diameter_list, "Diameter progression",
+                          "Runs", "Diameter in µm", "Diameter progression",
+                          f"diameter_progression_lks_{params['laplacian_k_size']}_lt_{params['laplacian_threshold']}_dks_{params['dilation_kernel_size']}_di_{params['dilation_iterations']}.png")
+
+        # Calculate averages
+        averaged_diameter = average_every_n(np.array(diameter_list), 5)
+
+        # Create x-axis values (each point represents 10 runs)
+        averaged_runs = np.arange(len(averaged_diameter)) * 5
+
+        # Diameter 5-run average progression
+        progression_plots(averaged_runs, averaged_diameter, "Diameter progression",
+                          "Runs (averaged every 5)", "Diameter in µm", "Diameter progression (5-run averages)",
+                          f"diameter_progression_averaged_lks_{params['laplacian_k_size']}_lt_{params['laplacian_threshold']}_dks_{params['dilation_kernel_size']}_di_{params['dilation_iterations']}.png")
 
     return pairwise_abs_diff, current_to_first_abs_diff, diameter_list
 
-def main():
-    current_file_directory = os.path.dirname(os.path.abspath(__file__))
-    directory_files_path = os.path.join(current_file_directory, "all_data_first", "1_F-75")
 
-    # ASSUMPTION: all folders for the current dish will have the same amount of runs (images) in them
+def progression_plots(runs_x_values, progression_y_values, plot_label, x_label, y_label, title, image_name):
+    # Create the plot
+    plt.figure(figsize=(10, 6))
+    plt.plot(runs_x_values, progression_y_values, label=plot_label)
 
-    #########################################
-    # Uncomment this if you want all the runs
-    amount_of_runs = len([name for name in os.listdir(directory_files_path)])
-    # amount_of_runs = 10
+    # Add labels and title
+    plt.xlabel(x_label)
+    plt.ylabel(y_label)
+    plt.title(title)
 
-    #runs = range(amount_of_runs-10, amount_of_runs)
-    runs = range(0, 10)
-    ##########################################
+    # Add grid and legend
+    plt.grid(True)
+    plt.legend(loc="upper right")
 
-    folder_names = sorted(
-        [name for name in os.listdir(os.path.join(current_file_directory, "all_data_first")) if ".gitkeep" not in name],
-        key=lambda x: int(os.path.basename(x).split("_")[0]))
+    path_dir = os.getcwd()
+    save_path = os.path.join(path_dir, "output-images", image_name)
+
+    plt.savefig(save_path)
+    plt.close()
 
 
-    ######################################
-    ## USE THIS FOR ALL POSSIBLE COMBINATIONS
+def evaluate_parameter_combinations(runs, folder_names, current_file_directory, do_plots=False,
+                                    show_3d_model=False, show_focus_contours=False):
 
     parameters = get_parameter_options()
 
     grid = ParameterGrid(parameters)
-
-    ###################################
-
-    # grid = [
-    #     {'dilation_iterations': 1, 'dilation_kernel_size': (2, 2), 'laplacian_k_size': 5, 'laplacian_threshold': 40},
-    #     {'dilation_iterations': 1, 'dilation_kernel_size': (2, 2), 'laplacian_k_size': 7, 'laplacian_threshold': 40},
-    #     {'dilation_iterations': 2, 'dilation_kernel_size': (4, 4), 'laplacian_k_size': 7, 'laplacian_threshold': 60},
-    #     {'dilation_iterations': 1, 'dilation_kernel_size': (5, 5), 'laplacian_k_size': 7, 'laplacian_threshold': 60}
-    # ]
 
     options = []
     pairwise_total_sum_list = []
@@ -850,13 +737,17 @@ def main():
 
     # Iterate through all possible combinations (or hardcoded ones)
     for params in grid:
+        print("------------------------\n")
+        print(f"CURRENT PARAMS: {params}\n")
         try:
             with open("output.txt", "a") as file:   
                 file.write("------------------------\n")
                 file.write(f"CURRENT PARAMS: {params}\n")
 
             pairwise_abs_diff, current_to_first_abs_diff, _ = do_runs(runs, folder_names,
-                                                                current_file_directory, params)
+                                                                current_file_directory, params,
+                                                                      do_plots, show_3d_model,
+                                                                      show_focus_contours)
 
             # First one records distance between the current run diameter and last run's diameter
             # Should be as little as possible because we need consistency for days 0 through 3/4
@@ -893,7 +784,7 @@ def main():
 
     # apply MinMaxScaler to each column
     scaled_data = scaler.fit_transform(numpy_array_for_minmax_analysis)  # Scale each column to [0, 1]
-    # multiply by 100 to spread out results even more
+    # multiply by 100, looks better
     scaled_data_100 = scaled_data * 100
 
     # sum the results for each row
@@ -912,12 +803,56 @@ def main():
     sorted_options = sorted(options, key=lambda x: x['final_score'], reverse=True)
 
     with open("output.txt", "a") as file:
-        file.write(f"TOP 3 BEST CHOICES:\n"
-            f"SCORE: {sorted_options[0]['final_score']}\nPARAMS: {sorted_options[0]['params']}\n"
-            f"SCORE: {sorted_options[1]['final_score']}\nPARAMS: {sorted_options[1]['params']}\n"
-            f"SCORE: {sorted_options[2]['final_score']}\nPARAMS: {sorted_options[2]['params']}\n")
+        # Output top 10 best
+        for i in range(10):
+            file.write(f"CHOICE {i+1}\nSCORE: {sorted_options[i]['final_score']}:\n"
+                f"SCORE: {sorted_options[i]['final_score']}\nPARAMS: {sorted_options[i]['params']}\n")
 
+    return sorted_options
 
 
 if __name__ == "__main__":
-    main()
+
+    current_file_directory = os.path.dirname(os.path.abspath(__file__))
+    directory_files_path = os.path.join(current_file_directory, "all_data_first", "1_F-75")
+
+    # ASSUMPTION: all folders for the current dish will have the same amount of runs (images) in them
+    amount_of_runs = len([name for name in os.listdir(directory_files_path)])
+
+    folder_names = sorted(
+        [name for name in os.listdir(os.path.join(current_file_directory, "all_data_first")) if ".gitkeep" not in name],
+        key=lambda x: int(os.path.basename(x).split("_")[0]))
+
+    ##################################################################################################
+    ## Use this if you want to iterate over possible combinations
+    ## And find the best ones according to the defined metrics
+
+    ## Only calculate the first 50 runs for each combination
+    ## Could increase, but it seems to be enough
+    # runs = range(0, 50)
+    #
+    # sorted_options = evaluate_parameter_combinations(runs, folder_names, current_file_directory,
+    #                                                 do_plots=False, show_3d_model=False, show_focus_contours=False)
+    #
+    # runs = range(0, amount_of_runs)
+    #
+    # Get plots for top 10 combinations
+    # for i in range(10):
+    #     do_runs(runs, folder_names, current_file_directory, sorted_options[i]['params'],
+    #     do_plots=True, show_3d_model=False, show_focus_contours=False)
+
+    ###################################################################################################
+
+    # Combinations derived from our tests, hardcoded
+    grid = [
+        {'dilation_iterations': 2, 'dilation_kernel_size': (4, 4), 'laplacian_k_size': 9, 'laplacian_threshold': 60}
+        # 2 Other possible combinations below
+        # {'dilation_iterations': 3, 'dilation_kernel_size': (2, 2), 'laplacian_k_size': 9, 'laplacian_threshold': 50},
+        # {'dilation_iterations': 3, 'dilation_kernel_size': (3, 3), 'laplacian_k_size': 9, 'laplacian_threshold': 60},
+    ]
+
+    runs = range(0, 2)
+
+    for param_combination in grid:
+        do_runs(runs, folder_names, current_file_directory, param_combination,
+                do_plots=True, show_3d_model=False, show_focus_contours=False)

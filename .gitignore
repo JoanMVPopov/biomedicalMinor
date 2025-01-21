@@ -1,6 +1,7 @@
 all_data_first/*/*.JPG
 
 files/*
-output-images/
+output-images/*.png
+output-images/*.jpg
 .venv
 .idea
