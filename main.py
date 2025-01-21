@@ -471,114 +471,131 @@ def analyze_run(jpg_filenames, params, show_3d_model = False, show_focus_contour
 
     mesh_volume = 0
 
+    # This is quite a bit faster than the method below it
+    # Also provides mesh_volume
+    # Otherwise method below will update mesh_volume
     try:
-        plotter = pv.Plotter()
+        # 4) Create mesh with marching_cubes
+        verts, faces, normals, values = create_mesh(volume_resampled, 128, spacing=(15.0, 1 / 3, 1 / 3))
 
-        # Store meshes for each layer
-        layer_meshes = []
+        # 5) Convert faces, create PyVista mesh, etc. (same as before)
+        faces_expanded = np.column_stack([np.full(len(faces), 3, dtype=np.int32), faces]).ravel()
+        mesh = pv.PolyData(verts, faces_expanded)
 
-        print("Creating separate meshes for each layer...")
-
-        # Create separate mesh for each layer
-        for z in range(volume_resampled.shape[0]):
-            # Create a mask for this layer
-            layer_mask = np.zeros_like(volume_resampled)
-            layer_mask[z] = volume_resampled[z]
-
-            try:
-                # Create mesh for this layer
-                verts, faces, normals, colors = create_colored_mesh(
-                    layer_mask,
-                    color_volume[z:z + 1],  # Take corresponding color slice
-                    128,
-                    spacing=(15.0, 1/3, -1/3)
-                )
-
-                # Create PyVista mesh for this layer
-                faces_expanded = np.column_stack([np.full(len(faces), 3, dtype=np.int32), faces]).ravel()
-                mesh = pv.PolyData(verts, faces_expanded)
-                mesh.point_data['colors'] = colors[:, :3]
-
-                layer_meshes.append(mesh)
-
-            except Exception as e:
-                print(f"Error creating mesh for layer {z}: {str(e)}")
-                #layer_meshes.append(None)
-
-        # Initialize list to track visibility status
-        visibility_status = [True] * len(layer_meshes)
-
-        # Add all meshes initially
-        mesh_actors = []
-        for i, mesh in enumerate(layer_meshes):
-            if mesh is not None:
-                actor = plotter.add_mesh(
-                    mesh,
-                    scalars='colors',
-                    rgb=True,
-                    name=f'layer_{i}'
-                )
-                mesh_actors.append(actor)
-            else:
-                mesh_actors.append(None)
-
-        print("Calculating checkbox positions...")
-
-        # Calculate checkbox positions
-        n_layers = len(layer_meshes)
-        checkbox_height = 0.05  # Height of each checkbox
-        start_position = 0.95 - (n_layers * checkbox_height)  # Start from top with some margin
-
-        # Add checkboxes for each layer
-        for i in range(n_layers):
-            if layer_meshes[i] is not None:
-                try:
-                    plotter.add_checkbox_button_widget(
-                        lambda state, layer=i: callback(state, layer, visibility_status, mesh_actors, plotter),
-                        value=True,  # Initially checked
-                        position=(10, int(start_position * 800 + (i * checkbox_height * 800))),
-                        # Convert to pixel coordinates
-                        size=15,
-                        border_size=2,
-                        color_on='grey',
-                        color_off='white',
-                        background_color='black'
-                    )
-                except Exception as e:
-                    print(e)
-
-                # Add text label for each checkbox
-                plotter.add_text(
-                    f"Focal Plane {i}",
-                    position=(40, int(start_position * 800 + (i * checkbox_height * 800))),
-                    font_size=10,
-                    color='black'
-                )
-
-        # Add title
-        plotter.add_text(
-            "Toggle Focal Planes",
-            position=(10, 820),
-            font_size=12,
-            color='black'
-        )
-
-        plotter.add_axes()
-        plotter.show_grid()
-
-        print("Showing 3D model...")
-
-        # Show the interactive window
-        plotter.show()
-
-
+        mesh_volume = mesh.volume
     except Exception as e:
-        with open("output.txt", "a") as file:
-            file.write("Mesh could not be created due to an error, likely related to the given iso value (128). Nevertheless, mesh volume will be set to 0. Moving on...\n")
-    finally:
-        sphere_volume_estimate = (4 / 3) * np.pi * ((diameter / 2) ** 3)
+        print("Mesh could not be created due to an error, likely related to the given iso value (128). Nevertheless, mesh volume will be set to 0. Moving on...\n")
 
-        return mesh_volume / (10 ** 4), sphere_volume_estimate / (10 ** 4), diameter
+    if show_3d_model:
+        try:
+            plotter = pv.Plotter()
+
+            # Store meshes for each layer
+            layer_meshes = []
+
+            print("Creating separate meshes for each layer...")
+
+            # Create separate mesh for each layer
+            for z in range(volume_resampled.shape[0]):
+                # Create a mask for this layer
+                layer_mask = np.zeros_like(volume_resampled)
+                layer_mask[z] = volume_resampled[z]
+
+                try:
+                    # Create mesh for this layer
+                    verts, faces, normals, colors = create_colored_mesh(
+                        layer_mask,
+                        color_volume[z:z + 1],  # Take corresponding color slice
+                        128,
+                        spacing=(15.0, 1/3, -1/3)
+                    )
+
+                    # Create PyVista mesh for this layer
+                    faces_expanded = np.column_stack([np.full(len(faces), 3, dtype=np.int32), faces]).ravel()
+                    mesh = pv.PolyData(verts, faces_expanded)
+                    mesh.point_data['colors'] = colors[:, :3]
+
+                    mesh_volume += mesh.volume
+
+                    layer_meshes.append(mesh)
+
+                except Exception as e:
+                    print(f"Error creating mesh for layer {z}: {str(e)}")
+                    #layer_meshes.append(None)
+
+
+            # Initialize list to track visibility status
+            visibility_status = [True] * len(layer_meshes)
+
+            # Add all meshes initially
+            mesh_actors = []
+            for i, mesh in enumerate(layer_meshes):
+                if mesh is not None:
+                    actor = plotter.add_mesh(
+                        mesh,
+                        scalars='colors',
+                        rgb=True,
+                        name=f'layer_{i}'
+                    )
+                    mesh_actors.append(actor)
+                else:
+                    mesh_actors.append(None)
+
+            print("Calculating checkbox positions...")
+
+            # Calculate checkbox positions
+            n_layers = len(layer_meshes)
+            checkbox_height = 0.05  # Height of each checkbox
+            start_position = 0.95 - (n_layers * checkbox_height)  # Start from top with some margin
+
+            # Add checkboxes for each layer
+            for i in range(n_layers):
+                if layer_meshes[i] is not None:
+                    try:
+                        plotter.add_checkbox_button_widget(
+                            lambda state, layer=i: callback(state, layer, visibility_status, mesh_actors, plotter),
+                            value=True,  # Initially checked
+                            position=(10, int(start_position * 800 + (i * checkbox_height * 800))),
+                            # Convert to pixel coordinates
+                            size=15,
+                            border_size=2,
+                            color_on='grey',
+                            color_off='white',
+                            background_color='black'
+                        )
+                    except Exception as e:
+                        print(e)
+
+                    # Add text label for each checkbox
+                    plotter.add_text(
+                        f"Focal Plane {i}",
+                        position=(40, int(start_position * 800 + (i * checkbox_height * 800))),
+                        font_size=10,
+                        color='black'
+                    )
+
+            # Add title
+            plotter.add_text(
+                "Toggle Focal Planes",
+                position=(10, 820),
+                font_size=12,
+                color='black'
+            )
+
+            plotter.add_axes()
+            plotter.show_grid()
+
+            print("Showing 3D model...")
+
+            # Show the interactive window
+            plotter.show()
+        except Exception as e:
+            with open("output.txt", "a") as file:
+                file.write("Mesh could not be created due to an error, likely related to the given iso value (128). Nevertheless, mesh volume will be set to 0. Moving on...\n")
+
+    sphere_volume_estimate = (4 / 3) * np.pi * ((diameter / 2) ** 3)
+
+    return mesh_volume / (10 ** 4), sphere_volume_estimate / (10 ** 4), diameter
 
 
 def callback(state, layer_idx, visibility_status, mesh_actors, plotter):
@@ -672,6 +689,11 @@ def do_runs(runs_range, folder_names, current_file_directory, params, do_plots=F
                           "Runs", "Volume in 10^4 µm", "Volume progression",
                           f"volume_progression_lks_{params['laplacian_k_size']}_lt_{params['laplacian_threshold']}_dks_{params['dilation_kernel_size']}_di_{params['dilation_iterations']}.png")
 
+        # PyVista volume progression
+        progression_plots(runs_list, volume_estimates_pyvista_mesh, "PYVISTA Volume progression",
+                          "Runs", "Volume in 10^4 µm", "Volume progression",
+                          f"volume_pyvista_progression_lks_{params['laplacian_k_size']}_lt_{params['laplacian_threshold']}_dks_{params['dilation_kernel_size']}_di_{params['dilation_iterations']}.png")
+
         # Calculate averages
         averaged_pyvista = average_every_n(volume_estimates_pyvista_mesh, 5)
         averaged_sphere = average_every_n(volume_estimates_sphere, 5)
@@ -683,6 +705,11 @@ def do_runs(runs_range, folder_names, current_file_directory, params, do_plots=F
         progression_plots(averaged_runs, averaged_sphere, "SPHERE Volume progression",
                           "Runs (averaged every 5)", "Volume in 10^4 µm", "Volume progression (5-run averages)",
                           f"volume_progression_averaged_lks_{params['laplacian_k_size']}_lt_{params['laplacian_threshold']}_dks_{params['dilation_kernel_size']}_di_{params['dilation_iterations']}.png")
+
+        # PyVista volume 5-run average progression
+        progression_plots(averaged_runs, averaged_pyvista, "PYVISTA Volume progression",
+                          "Runs (averaged every 5)", "Volume in 10^4 µm", "Volume progression (5-run averages)",
+                          f"volume_pyvista_progression_averaged_lks_{params['laplacian_k_size']}_lt_{params['laplacian_threshold']}_dks_{params['dilation_kernel_size']}_di_{params['dilation_iterations']}.png")
 
         # Diameter progression
         progression_plots(runs_list, diameter_list, "Diameter progression",
@@ -851,7 +878,7 @@ if __name__ == "__main__":
         # {'dilation_iterations': 3, 'dilation_kernel_size': (3, 3), 'laplacian_k_size': 9, 'laplacian_threshold': 60},
     ]
 
-    runs = range(0, 2)
+    runs = range(0, 10)
 
     for param_combination in grid:
         do_runs(runs, folder_names, current_file_directory, param_combination,
