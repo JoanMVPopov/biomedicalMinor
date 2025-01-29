@@ -26,7 +26,7 @@ apply changes to the algorithm and run it. Comments have been provided in all ma
 
 ### Current parameter settings
 Currently, the code runs a hardcoded combination of parameters (as we have already calculated the parameter leaderboard).
-If you would like to recalculate the metric evaluation for all 900 combinations, please uncomment the relevant code on lines `900-918`
+If you would like to recalculate the metric evaluation for all 900 combinations, please uncomment the relevant code on lines `845-863`
 
 ## Installation Instructions
 
