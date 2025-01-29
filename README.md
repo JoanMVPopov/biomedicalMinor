@@ -16,6 +16,10 @@ or for some systems:
 python3 --version
 ```
 
+### Folder structure
+The images of the embryo for a given focal plane should be pasted into the corresponding focal folder located in "all_data_first". 
+Here is an example for one of the focal planes: ![Example](./static/readme_example.png)
+
 ## Installation Instructions
 
 1. Clone the repository and navigate to the project directory:
