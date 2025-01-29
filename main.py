@@ -139,45 +139,6 @@ def visualize_diameters(image, contour, area_ratio, avg_distance_to_enclosing):
     cv2.putText(vis_image, f'Min enclosing: {min_diameter:.1f}',
                 (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
 
-    # # Draw distances to enclosing circle
-    # contour_points = contour.reshape(-1, 2)
-    # distances_to_center = np.sqrt(
-    #     (contour_points[:, 0] - min_center[0]) ** 2 +
-    #     (contour_points[:, 1] - min_center[1]) ** 2
-    # )
-    # distances_to_perimeter = min_radius - distances_to_center
-
-    # This visualizes the 10 longest distances between the contour and the enclosing circle
-
-    # # Sort distances and get indices of top 10 distances
-    # top_indices = np.argsort(distances_to_perimeter)[-10:]
-    #
-    # # Draw lines for top 10 distances
-    # for idx in top_indices:
-    #     point = contour_points[idx]
-    #     distance = distances_to_perimeter[idx]
-    #
-    #     # Calculate point on circle perimeter
-    #     dx = point[0] - min_center[0]
-    #     dy = point[1] - min_center[1]
-    #     angle = np.arctan2(dy, dx)
-    #     circle_x = min_center[0] + min_radius * np.cos(angle)
-    #     circle_y = min_center[1] + min_radius * np.sin(angle)
-    #
-    #     # Draw line with color based on distance
-    #     max_dist = np.max(distances_to_perimeter)
-    #     color_ratio = distance / max_dist
-    #     color = (int(255 * color_ratio), int(255 * (1 - color_ratio)), 0)
-    #
-    #     start = (int(point[0]), int(point[1]))
-    #     end = (int(circle_x), int(circle_y))
-    #     cv2.line(vis_image, start, end, color, 2)
-    #
-    #     # Optionally add distance text near the line
-    #     mid_point = ((start[0] + end[0]) // 2, (start[1] + end[1]) // 2)
-    #     cv2.putText(vis_image, f'{distance:.1f}',
-    #                 mid_point, cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
-
     # Add area ratio text
     cv2.putText(vis_image, f'Area ratio: {area_ratio:.1f}%',
                 (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
@@ -264,9 +225,6 @@ def calc_contour_to_circle_perimeter_distance(contour, center_x, center_y, radiu
     # the radius and the distance to center
     distances_to_perimeter = radius - distances_to_center
 
-    # # Sort distances in descending order and select the top 10
-    # top_distances = np.sort(distances_to_perimeter)[-10:][::-1]
-
     # Calculate average distance
     avg_distance = np.mean(distances_to_perimeter)
 
@@ -297,9 +255,6 @@ def load_images_from_directory(jpg_filenames, params, show_focus_contours = Fals
 
         gray = cv2.cvtColor(final, cv2.COLOR_BGR2GRAY)
 
-        # Otsu's threshold
-        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
         # compute Laplacian
         laplacian = cv2.Laplacian(gray, cv2.CV_64F, ksize=params['laplacian_k_size'])
         # Take absolute value to get magnitude
@@ -308,7 +263,7 @@ def load_images_from_directory(jpg_filenames, params, show_focus_contours = Fals
         laplacian_norm = cv2.normalize(laplacian_abs, None, 0, 255, cv2.NORM_MINMAX)
         laplacian_norm = np.uint8(laplacian_norm)
 
-        # 4. Threshold to create a binary mask
+        # Threshold to create a binary mask
         _, focus_mask = cv2.threshold(laplacian_norm, params['laplacian_threshold'], 255, cv2.THRESH_BINARY)
 
         # First, let's apply morphological operations to connect nearby points
@@ -329,15 +284,9 @@ def load_images_from_directory(jpg_filenames, params, show_focus_contours = Fals
         # Create an empty image for the outline
         outline_image = np.zeros_like(gray)
 
-        # Draw only the largest contour
         # Draw and fill contours
         if contours:
-            # Close first and last contour, needed for proper 3d mesh
-            # if i == 0 or i == len(jpg_filenames) - 1:
-            #     cv2.drawContours(outline_image, contours, -1, 128, -1)  # -1 thickness means fill
-
-            # else:
-            # First fill the inside area with white (255)
+            # fill the inside area with white (255)
             cv2.drawContours(outline_image, contours, -1, 255, -1)  # -1 thickness means fill
 
             # Create a copy of the filled contour
@@ -373,10 +322,6 @@ def load_images_from_directory(jpg_filenames, params, show_focus_contours = Fals
                 if show_focus_contours:
                     cv2.imshow(f"Diameter measurements - Slice {i}", results['annotated_image'])
                     cv2.waitKey(0)
-
-        # 6. Create output (isolate in-focus regions)
-        # focus_mask_3d = cv2.merge([closed, closed, closed])
-        # in_focus_only = cv2.bitwise_and(final, focus_mask_3d)
 
         focus_mask_3d = cv2.merge([outline_image, outline_image, outline_image])
         in_focus_only = cv2.bitwise_and(image, focus_mask_3d)
@@ -421,26 +366,26 @@ def load_images_from_directory(jpg_filenames, params, show_focus_contours = Fals
 
 
 def gradual_color_region_outside_radius(image):
-    # 1) Determine the center and radius
+    # Determine the center and radius
     h, w = image.shape[:2]
     center_x, center_y = w // 2, h // 2
     radius = max(center_x, center_y) + 100  # for safety margin
 
-    # 2) Calculate the average color
+    # Calculate the average color
     if len(image.shape) == 3 and image.shape[2] == 3:
         avg_color = np.mean(image, axis=(0, 1))
     else:
         avg_color = np.mean(image)
 
-    # 3) Build a distance map from the center
+    # Build a distance map from the center
     y_indices, x_indices = np.indices((h, w))
     dist_map = np.sqrt((x_indices - center_x) ** 2 + (y_indices - center_y) ** 2)
 
-    # 4) Create alpha channel for gradual transition
+    # Create alpha channel for gradual transition
     alpha = dist_map / radius
     alpha = np.clip(alpha, 0, 1)
 
-    # 5) Apply gradual transition to average color
+    # Apply gradual transition to average color
     if len(image.shape) == 3 and image.shape[2] == 3:
         # For color images
         alpha_3d = cv2.merge([alpha, alpha, alpha])
@@ -504,7 +449,7 @@ def create_colored_mesh(volume, color_volume, threshold, spacing):
     return verts, faces, normals, np.array(colors)
 
 def analyze_run(jpg_filenames, params, show_3d_model = False, show_focus_contours = False):
-    # 1) Load the processed 3D volume (in-focus only)
+    # Load the processed 3D volume (in-focus only)
     volume_resampled, color_volume, diameter = load_images_from_directory(jpg_filenames, params, show_focus_contours)
 
     mesh_volume = 0
@@ -513,10 +458,10 @@ def analyze_run(jpg_filenames, params, show_3d_model = False, show_focus_contour
     # Also provides mesh_volume
     # Otherwise method below will update mesh_volume
     try:
-        # 4) Create mesh with marching_cubes
+        # Create mesh with marching_cubes
         verts, faces, normals, values = create_mesh(volume_resampled, 128, spacing=(15.0, 1 / 3, 1 / 3))
 
-        # 5) Convert faces, create PyVista mesh, etc. (same as before)
+        # Convert faces, create PyVista mesh, etc. (same as before)
         faces_expanded = np.column_stack([np.full(len(faces), 3, dtype=np.int32), faces]).ravel()
         mesh = pv.PolyData(verts, faces_expanded)
 
