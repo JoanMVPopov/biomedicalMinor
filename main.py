@@ -929,4 +929,4 @@ if __name__ == "__main__":
 
     for param_combination in grid:
         do_runs(runs, folder_names, current_file_directory, param_combination,
-                do_plots=True, show_3d_model=False, show_focus_contours=False)
+                do_plots=False, show_3d_model=True, show_focus_contours=False)

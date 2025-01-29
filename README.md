@@ -20,6 +20,14 @@ python3 --version
 The images of the embryo for a given focal plane should be pasted into the corresponding focal folder located in "all_data_first". 
 Here is an example for one of the focal planes: ![Example](./static/readme_example.png)
 
+### GUI
+The current state of the code does not provide a GUI, meaning that a basic understanding of Python is needed in order to 
+apply changes to the algorithm and run it. Comments have been provided in all major parts of the code.
+
+### Current parameter settings
+Currently, the code runs a hardcoded combination of parameters (as we have already calculated the parameter leaderboard).
+If you would like to recalculate the metric evaluation for all 900 combinations, please uncomment the relevant code on lines `900-918`
+
 ## Installation Instructions
 
 1. Clone the repository and navigate to the project directory:
